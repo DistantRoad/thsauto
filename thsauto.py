@@ -1,26 +1,27 @@
-import win32api
-import win32gui
-import win32ui
-import win32con
-import win32clipboard
-import win32process
-
 import ctypes
-import time
-import math
 import os
+import time
 
+import pytesseract
+import win32api
+import win32clipboard
+import win32con
+import win32gui
+import win32process
+import win32ui
 from PIL import Image
-import ddddocr
-DdddOcr = ddddocr.DdddOcr()
 
 from const import VK_CODE, BALANCE_CONTROL_ID_GROUP
 
+# import ddddocr
+# DdddOcr = ddddocr.DdddOcr()
+
 sleep_time = 0.2
 refresh_sleep_time = 0.5
-retry_time = 10
+retry_time = 30
 
 window_title = u'网上股票交易系统5.0'
+
 
 def get_clipboard_data():
     win32clipboard.OpenClipboard()
@@ -30,12 +31,16 @@ def get_clipboard_data():
         win32clipboard.CloseClipboard()
     return data
 
+
 def hot_key(keys):
     time.sleep(sleep_time)
     for key in keys:
         win32api.keybd_event(VK_CODE[key], 0, 0, 0)
+        time.sleep(sleep_time)
     for key in reversed(keys):
         win32api.keybd_event(VK_CODE[key], 0, win32con.KEYEVENTF_KEYUP, 0)
+        time.sleep(sleep_time)
+
 
 def set_text(hwnd, string):
     win32gui.SetForegroundWindow(hwnd)
@@ -43,6 +48,8 @@ def set_text(hwnd, string):
     win32api.keybd_event(VK_CODE['backspace'], 0, 0, 0)
     win32api.keybd_event(VK_CODE['backspace'], 0, win32con.KEYEVENTF_KEYUP, 0)
     for char in string:
+        if not char.lower() in VK_CODE:
+            continue
         if char.isupper():
             win32api.keybd_event(0xA0, 0, 0, 0)
             win32api.keybd_event(VK_CODE[char.lower()], 0, 0, 0)
@@ -52,11 +59,13 @@ def set_text(hwnd, string):
             win32api.keybd_event(VK_CODE[char], 0, 0, 0)
             win32api.keybd_event(VK_CODE[char], 0, win32con.KEYEVENTF_KEYUP, 0)
 
+
 def get_text(hwnd):
     length = ctypes.windll.user32.SendMessageW(hwnd, win32con.WM_GETTEXTLENGTH)
     buf = ctypes.create_unicode_buffer(length + 1)
     ctypes.windll.user32.SendMessageW(hwnd, win32con.WM_GETTEXT, length, ctypes.byref(buf))
     return buf.value
+
 
 def parse_table(text):
     lines = text.split('\t\r\n')
@@ -85,7 +94,7 @@ class ThsAuto:
     def kill_client(self):
         self.hwnd_main = None
         retry = 5
-        while(retry > 0):
+        while (retry > 0):
             hwnd = win32gui.FindWindow(None, window_title)
             if hwnd == 0:
                 time.sleep(1)
@@ -96,7 +105,6 @@ class ThsAuto:
                 hot_key(['alt', 'F4'])
                 time.sleep(1)
                 retry -= 1
-                
 
     def get_tree_hwnd(self):
         hwnd = self.hwnd_main
@@ -122,6 +130,7 @@ class ThsAuto:
 
     def get_ocr_hwnd(self):
         tid, pid = win32process.GetWindowThreadProcessId(self.hwnd_main)
+
         def enum_children(hwnd, results):
             try:
                 if (win32gui.IsWindowVisible(hwnd) and win32gui.IsWindowEnabled(hwnd)):
@@ -137,7 +146,7 @@ class ThsAuto:
             return len(results) == 0
 
         popups = []
-        windows = []            
+        windows = []
         win32gui.EnumThreadWindows(tid, lambda hwnd, l: l.append(hwnd), windows)
         for hwnd in windows:
             if not handler(hwnd, popups):
@@ -162,7 +171,7 @@ class ThsAuto:
             'code': 0, 'status': 'succeed',
             'data': data,
         }
-        
+
     def get_position(self):
         self.switch_to_normal()
         hot_key(['F1'])
@@ -195,7 +204,7 @@ class ThsAuto:
         ctrl = win32gui.GetDlgItem(hwnd, 0x417)
 
         self.copy_table(ctrl)
-        
+
         data = None
         retry = 0
         while not data and retry < retry_time:
@@ -208,7 +217,7 @@ class ThsAuto:
                 'data': parse_table(data),
             }
         return {'code': 1, 'status': 'failed'}
-        
+
     def get_filled_orders(self):
         self.switch_to_normal()
         hot_key(['F2'])
@@ -372,7 +381,7 @@ class ThsAuto:
         self.refresh()
         hwnd = self.get_right_hwnd()
         ctrl = win32gui.GetDlgItem(hwnd, 0x417)
-        
+
         self.copy_table(ctrl)
 
         data = None
@@ -406,6 +415,7 @@ class ThsAuto:
 
     def get_result(self, cid=0x3EC):
         tid, pid = win32process.GetWindowThreadProcessId(self.hwnd_main)
+
         def enum_children(hwnd, results):
             try:
                 if (win32gui.IsWindowVisible(hwnd) and win32gui.IsWindowEnabled(hwnd)):
@@ -414,14 +424,15 @@ class ThsAuto:
                 return
 
         def handler(hwnd, results):
-            if (win32api.GetWindowLong(hwnd, win32con.GWL_ID) == cid and 
+            if (win32api.GetWindowLong(hwnd, win32con.GWL_ID) == cid and
                     win32gui.GetClassName(hwnd) == 'Static'):
                 results.append(hwnd)
                 return False
             enum_children(hwnd, results)
             return len(results) == 0
+
         popups = []
-        windows = []            
+        windows = []
         win32gui.EnumThreadWindows(tid, lambda hwnd, l: l.append(hwnd), windows)
         for hwnd in windows:
             if not handler(hwnd, popups):
@@ -513,25 +524,36 @@ class ThsAuto:
         win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
         time.sleep(sleep_time)
 
-
     def copy_table(self, hwnd):
         win32gui.SetForegroundWindow(hwnd)
         os.system('echo off | clip')
         hot_key(['ctrl', 'c'])
         self.input_ocr()
 
-    def input_ocr(self):  
+    def input_ocr(self):
         ocr = self.get_ocr_hwnd()
-        if ocr > 0:
+        i = 0
+        while ocr > 0 and i < 10:
             self.capture_window(ocr, 'ocr.png')
-            with open('ocr.png', 'rb') as f:
-                data = f.read()
-                code = DdddOcr.classification(data)
-                ctrl = ctypes.windll.user32.GetWindow(ocr, win32con.GW_HWNDNEXT)
-                ctrl = ctypes.windll.user32.GetWindow(ctrl, win32con.GW_HWNDNEXT)
-                ctrl = ctypes.windll.user32.GetWindow(ctrl, win32con.GW_HWNDNEXT)
-                set_text(ctrl, code)
-                hot_key(['enter'])
+            data = Image.open('ocr.png')
+            # code = DdddOcr.classification(data)
+            code = pytesseract.image_to_string(data, lang='eng').strip()
+            ctrl = ctypes.windll.user32.GetWindow(ocr, win32con.GW_HWNDNEXT)
+            ctrl = ctypes.windll.user32.GetWindow(ctrl, win32con.GW_HWNDNEXT)
+            ctrl = ctypes.windll.user32.GetWindow(ctrl, win32con.GW_HWNDNEXT)
+            set_text(ctrl, code)
+            hot_key(['enter'])
+
+            i += 1
+            err_text = get_text(ctypes.windll.user32.GetWindow(ocr, win32con.GW_HWNDNEXT))
+            if u'验证码错误' in err_text:
+                left, top, right, bottom = win32gui.GetWindowRect(ocr)
+                win32api.SetCursorPos(((left + right) // 2, (top + bottom) // 2))
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                time.sleep(sleep_time)
+            else:
+                return
 
     def capture_window(self, hwnd, file_name):
         left, top, right, bottom = win32gui.GetWindowRect(hwnd)
@@ -557,7 +579,5 @@ class ThsAuto:
 
         img.save(file_name)
 
-
     def test(self):
         pass
-
