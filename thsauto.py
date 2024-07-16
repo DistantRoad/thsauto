@@ -1,6 +1,7 @@
 import ctypes
 import os
 import time
+from decimal import Decimal
 
 import pytesseract
 import win32api
@@ -168,7 +169,7 @@ class ThsAuto:
             if ctrl > 0 and win32gui.IsWindowVisible(ctrl):
                 data[key] = get_text(ctrl)
         if '可用金额' not in data:
-            data['可用金额'] = str(float(data['总资产']) - float(data['股票市值']))
+            data['可用金额'] = str(Decimal(data['总资产']) - Decimal(data['股票市值']))
         return {
             'code': 0, 'status': 'succeed',
             'data': data,
