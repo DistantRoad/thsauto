@@ -169,7 +169,7 @@ class ThsAuto:
             if ctrl > 0 and win32gui.IsWindowVisible(ctrl):
                 data[key] = get_text(ctrl)
         if '可用金额' not in data:
-            data['可用金额'] = str(Decimal(data['总资产']) - Decimal(data['股票市值']))
+            data['可用金额'] = str(Decimal(data['总资产']) - Decimal(data['股票市值']) - Decimal(data['冻结金额']))
         return {
             'code': 0, 'status': 'succeed',
             'data': data,
