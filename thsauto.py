@@ -168,7 +168,7 @@ class ThsAuto:
             if ctrl > 0 and win32gui.IsWindowVisible(ctrl):
                 data[key] = get_text(ctrl)
         if '可用金额' not in data:
-            data['可用金额'] = float(data['总资产']) - float(data['股票市值'])
+            data['可用金额'] = str(float(data['总资产']) - float(data['股票市值']))
         return {
             'code': 0, 'status': 'succeed',
             'data': data,
