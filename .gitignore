@@ -2,3 +2,5 @@
 **/.vscode
 ocr.png
 .aider*
+.idea/
+.DS_Store
