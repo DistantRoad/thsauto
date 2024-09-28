@@ -538,9 +538,12 @@ class ThsAuto:
         i = 0
         while ocr > 0 and i < 10:
             self.capture_window(ocr, 'ocr.png')
-            data = Image.open('ocr.png')
+            # data = Image.open('ocr.png')
+            import baidu_ocr
+            code = baidu_ocr.ocr('ocr.png')
+            print(code)
             # code = DdddOcr.classification(data)
-            code = pytesseract.image_to_string(data, lang='eng').strip()
+            # code = pytesseract.image_to_string(data, lang='eng').strip()
             ctrl = ctypes.windll.user32.GetWindow(ocr, win32con.GW_HWNDNEXT)
             ctrl = ctypes.windll.user32.GetWindow(ctrl, win32con.GW_HWNDNEXT)
             ctrl = ctypes.windll.user32.GetWindow(ctrl, win32con.GW_HWNDNEXT)

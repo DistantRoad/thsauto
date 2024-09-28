@@ -4,6 +4,7 @@ from thsauto import ThsAuto
 import time
 import sys
 import threading
+import traceback
 
 import os
 
@@ -33,6 +34,7 @@ def interval_call(func):
         try:
             rt = func(*args, **kwargs)
         except Exception as e:
+            traceback.print_exc()
             rt = ({'code': 1, 'status': 'failed', 'msg': '{}'.format(e)}, 400)
         next_time = time.time() + interval
         lock.release()
