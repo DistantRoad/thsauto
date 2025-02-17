@@ -1,31 +1,45 @@
-# -*- coding: utf-8 -*-
-from thsauto import ThsAuto
+from pywinauto import Application
+from pywinauto.findwindows import ElementNotFoundError
 
-import time
+WINDOW_TITLE = "网上股票交易系统5.0"
 
-if __name__ == '__main__':
-    
-    auto = ThsAuto()                                        # 连接客户端
+def connect_to_app():
+    try:
+        app = Application(backend="uia").connect(title=WINDOW_TITLE)
+        main_window = app.window(title=WINDOW_TITLE)
+        if not main_window.is_visible():
+            raise ValueError("窗口不可见。请确保窗口未最小化。")
+        return main_window
+    except ElementNotFoundError:
+        raise ValueError(f"无法找到标题为 '{WINDOW_TITLE}' 的窗口。请确保应用程序已经运行。")
 
-    print('可用资金')
-    print(auto.get_balance())                               # 获取当前可用资金
-    print('持仓')
-    print(auto.get_position())                              # 获取当前持有的股票
+def find_tree_view(main_window):
+    try:
+        return main_window.child_window(control_type="Tree")
+    except ElementNotFoundError:
+        raise ValueError("无法找到TreeView控件")
 
-    print('卖出')
-    print(auto.sell(stock_no='162411', amount=200, price=0.4035))   # 卖出股票
-    
-    print('买入')
-    result = auto.buy(stock_no='162411', amount=100, price=0.41)    # 买入股票
-    print(result)
+def print_tree_structure(tree_item, level=0):
+    try:
+        for child in tree_item.children():
+            print("  " * level + child.window_text())
+            print_tree_structure(child, level + 1)
+    except AttributeError:
+        pass
 
-    print('已成交')
-    print(auto.get_filled_orders())                                 # 获取已成交订单
-    
-    print('未成交')
-    print(auto.get_active_orders())                                 # 获取未成交订单
+def main():
+    try:
+        main_window = connect_to_app()
+        print(f"成功找到并连接到窗口：'{WINDOW_TITLE}'")
 
-    if result and result['code'] == 0:                                # 如果买入下单成功，尝试撤单
-        print('撤单')
-        print(auto.cancel(entrust_no=result['entrust_no']))
+        tree_view = find_tree_view(main_window)
+        print("成功找到TreeView控件")
 
+        print("TreeView的结构：")
+        print_tree_structure(tree_view)
+
+    except ValueError as e:
+        print(str(e))
+
+if __name__ == "__main__":
+    main()

@@ -15,8 +15,9 @@ auto = ThsAuto()
 
 client_path = None
 def run_client():
-    os.system('start ' + client_path)
-    
+    os.chdir(os.path.dirname(client_path))
+    executable_path = os.path.basename(client_path)
+    os.system('start ' + executable_path)
 
 lock = threading.Lock()
 next_time = 0
@@ -44,35 +45,35 @@ def interval_call(func):
 @app.route('/thsauto/balance', methods = ['GET'])
 @interval_call
 def get_balance():
-    auto.active_mian_window()
+    auto.active_main_window()
     result = auto.get_balance()
     return jsonify(result), 200
 
 @app.route('/thsauto/position', methods = ['GET'])
 @interval_call
 def get_position():
-    auto.active_mian_window()
+    auto.active_main_window()
     result = auto.get_position()
     return jsonify(result), 200
 
 @app.route('/thsauto/orders/active', methods = ['GET'])
 @interval_call
 def get_active_orders():
-    auto.active_mian_window()
+    auto.active_main_window()
     result = auto.get_active_orders()
     return jsonify(result), 200
 
 @app.route('/thsauto/orders/filled', methods = ['GET'])
 @interval_call
 def get_filled_orders():
-    auto.active_mian_window()
+    auto.active_main_window()
     result = auto.get_filled_orders()
     return jsonify(result), 200
 
 @app.route('/thsauto/sell', methods = ['GET'])
 @interval_call
 def sell():
-    auto.active_mian_window()
+    auto.active_main_window()
     stock = request.args['stock_no']
     amount = request.args['amount']
     price = request.args.get('price', None)
@@ -84,7 +85,7 @@ def sell():
 @app.route('/thsauto/buy', methods = ['GET'])
 @interval_call
 def buy():
-    auto.active_mian_window()
+    auto.active_main_window()
     stock = request.args['stock_no']
     amount = request.args['amount']
     price = request.args.get('price', None)
@@ -96,7 +97,7 @@ def buy():
 @app.route('/thsauto/buy/kc', methods = ['GET'])
 @interval_call
 def buy_kc():
-    auto.active_mian_window()
+    auto.active_main_window()
     stock = request.args['stock_no']
     amount = request.args['amount']
     price = request.args.get('price', None)
@@ -108,7 +109,7 @@ def buy_kc():
 @app.route('/thsauto/sell/kc', methods = ['GET'])
 @interval_call
 def sell_kc():
-    auto.active_mian_window()
+    auto.active_main_window()
     stock = request.args['stock_no']
     amount = request.args['amount']
     price = request.args.get('price', None)
@@ -120,7 +121,7 @@ def sell_kc():
 @app.route('/thsauto/cancel', methods = ['GET'])
 @interval_call
 def cancel():
-    auto.active_mian_window()
+    auto.active_main_window()
     entrust_no = request.args['entrust_no']
     result = auto.cancel(entrust_no=entrust_no)
     return jsonify(result), 200
@@ -128,7 +129,7 @@ def cancel():
 @app.route('/thsauto/client/kill', methods = ['GET'])
 @interval_call
 def kill_client():
-    auto.active_mian_window()
+    auto.active_main_window()
     auto.kill_client()
     return jsonify({'code': 0, 'status': 'succeed'}), 200
 
@@ -136,21 +137,22 @@ def kill_client():
 @app.route('/thsauto/client/restart', methods = ['GET'])
 @interval_call
 def restart_client():
-    auto.active_mian_window()
+    auto.active_main_window()
     auto.kill_client()
     run_client()
-    time.sleep(5)
-    auto.bind_client()
-    if auto.hwnd_main is None:
-        return jsonify({'code': 1, 'status': 'failed'}), 200
-    else:
-        return jsonify({'code': 0, 'status': 'succeed'}), 200
+    max_wait_time = 30
+    for _ in range(max_wait_time):
+        auto.bind_client()
+        if auto.hwnd_main is not None:
+            return jsonify({'code': 0, 'status': 'succeed'}), 200
+        time.sleep(1)
+    return jsonify({'code': 1, 'status': 'failed', 'message': f'Client failed to start within {max_wait_time} seconds'}), 200
 
 
 @app.route('/thsauto/test', methods = ['GET'])
 @interval_call
 def test():
-    auto.active_mian_window()
+    auto.active_main_window()
     auto.test()
     return jsonify({}), 200
 

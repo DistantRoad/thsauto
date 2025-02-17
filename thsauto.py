@@ -3,7 +3,7 @@ import os
 import time
 from decimal import Decimal
 
-import pytesseract
+import baidu_ocr
 import win32api
 import win32clipboard
 import win32con
@@ -21,7 +21,7 @@ sleep_time = 0.2
 refresh_sleep_time = 0.5
 retry_time = 30
 
-window_title = u'网上股票交易系统5.0'
+window_title = "网上股票交易系统5.0"
 
 
 def get_clipboard_data():
@@ -46,8 +46,8 @@ def hot_key(keys):
 def set_text(hwnd, string):
     win32gui.SetForegroundWindow(hwnd)
     win32api.SendMessage(hwnd, win32con.EM_SETSEL, 0, -1)
-    win32api.keybd_event(VK_CODE['backspace'], 0, 0, 0)
-    win32api.keybd_event(VK_CODE['backspace'], 0, win32con.KEYEVENTF_KEYUP, 0)
+    win32api.keybd_event(VK_CODE["backspace"], 0, 0, 0)
+    win32api.keybd_event(VK_CODE["backspace"], 0, win32con.KEYEVENTF_KEYUP, 0)
     for char in string:
         if not char.lower() in VK_CODE:
             continue
@@ -64,17 +64,19 @@ def set_text(hwnd, string):
 def get_text(hwnd):
     length = ctypes.windll.user32.SendMessageW(hwnd, win32con.WM_GETTEXTLENGTH)
     buf = ctypes.create_unicode_buffer(length + 1)
-    ctypes.windll.user32.SendMessageW(hwnd, win32con.WM_GETTEXT, length, ctypes.byref(buf))
+    ctypes.windll.user32.SendMessageW(
+        hwnd, win32con.WM_GETTEXT, length, ctypes.byref(buf)
+    )
     return buf.value
 
 
 def parse_table(text):
-    lines = text.split('\t\r\n')
-    keys = lines[0].split('\t')
+    lines = text.split("\t\r\n")
+    keys = lines[0].split("\t")
     result = []
     for i in range(1, len(lines)):
         info = {}
-        items = lines[i].split('\t')
+        items = lines[i].split("\t")
         for j in range(len(keys)):
             info[keys[j]] = items[j]
         result.append(info)
@@ -95,7 +97,7 @@ class ThsAuto:
     def kill_client(self):
         self.hwnd_main = None
         retry = 5
-        while (retry > 0):
+        while retry > 0:
             hwnd = win32gui.FindWindow(None, window_title)
             if hwnd == 0:
                 time.sleep(1)
@@ -103,30 +105,30 @@ class ThsAuto:
             else:
                 win32gui.SetForegroundWindow(hwnd)
                 time.sleep(sleep_time)
-                hot_key(['alt', 'F4'])
+                hot_key(["alt", "F4"])
                 time.sleep(1)
                 retry -= 1
 
     def get_tree_hwnd(self):
         hwnd = self.hwnd_main
-        hwnd = win32gui.FindWindowEx(hwnd, None, 'AfxMDIFrame140s', None)
-        hwnd = win32gui.FindWindowEx(hwnd, None, 'AfxWnd140s', None)
+        hwnd = win32gui.FindWindowEx(hwnd, None, "AfxMDIFrame140s", None)
+        hwnd = win32gui.FindWindowEx(hwnd, None, "AfxWnd140s", None)
         hwnd = win32gui.FindWindowEx(hwnd, None, None, "HexinScrollWnd")
-        hwnd = win32gui.FindWindowEx(hwnd, None, 'AfxWnd140s', None)
-        hwnd = win32gui.FindWindowEx(hwnd, None, 'SysTreeView32', None)
+        hwnd = win32gui.FindWindowEx(hwnd, None, "AfxWnd140s", None)
+        hwnd = win32gui.FindWindowEx(hwnd, None, "SysTreeView32", None)
         return hwnd
 
     def get_right_hwnd(self):
         hwnd = self.hwnd_main
-        hwnd = win32gui.FindWindowEx(hwnd, None, 'AfxMDIFrame140s', None)
+        hwnd = win32gui.FindWindowEx(hwnd, None, "AfxMDIFrame140s", None)
         hwnd = win32gui.GetDlgItem(hwnd, 0xE901)
         return hwnd
 
     def get_left_bottom_tabs(self):
         hwnd = self.hwnd_main
-        hwnd = win32gui.FindWindowEx(hwnd, None, 'AfxMDIFrame140s', None)
-        hwnd = win32gui.FindWindowEx(hwnd, None, 'AfxWnd140s', None)
-        hwnd = win32gui.FindWindowEx(hwnd, None, 'CCustomTabCtrl', None)
+        hwnd = win32gui.FindWindowEx(hwnd, None, "AfxMDIFrame140s", None)
+        hwnd = win32gui.FindWindowEx(hwnd, None, "AfxWnd140s", None)
+        hwnd = win32gui.FindWindowEx(hwnd, None, "CCustomTabCtrl", None)
         return hwnd
 
     def get_ocr_hwnd(self):
@@ -134,13 +136,13 @@ class ThsAuto:
 
         def enum_children(hwnd, results):
             try:
-                if (win32gui.IsWindowVisible(hwnd) and win32gui.IsWindowEnabled(hwnd)):
+                if win32gui.IsWindowVisible(hwnd) and win32gui.IsWindowEnabled(hwnd):
                     win32gui.EnumChildWindows(hwnd, handler, results)
             except Exception:
                 return
 
         def handler(hwnd, results):
-            if win32gui.GetClassName(hwnd) == 'Static':
+            if win32gui.GetClassName(hwnd) == "Static":
                 results.append(hwnd)
                 return False
             enum_children(hwnd, results)
@@ -154,13 +156,13 @@ class ThsAuto:
                 break
         for ctrl in popups:
             text = get_text(ctrl)
-            if u"检测到您正在拷贝数据" in text:
+            if "检测到您正在拷贝数据" in text:
                 return ctypes.windll.user32.GetWindow(ctrl, win32con.GW_HWNDNEXT)
         return 0
 
     def get_balance(self):
         self.switch_to_normal()
-        hot_key(['F4'])
+        hot_key(["F4"])
         self.refresh()
         hwnd = self.get_right_hwnd()
         data = {}
@@ -168,40 +170,45 @@ class ThsAuto:
             ctrl = win32gui.GetDlgItem(hwnd, cid)
             if ctrl > 0 and win32gui.IsWindowVisible(ctrl):
                 data[key] = get_text(ctrl)
-        if '可用金额' not in data:
-            data['可用金额'] = str(Decimal(data['总资产']) - Decimal(data['股票市值']) - Decimal(data['冻结金额']))
+        if "可用金额" not in data:
+            data["可用金额"] = str(
+                Decimal(data["总资产"])
+                - Decimal(data["股票市值"])
+                - Decimal(data["冻结金额"])
+            )
         return {
-            'code': 0, 'status': 'succeed',
-            'data': data,
+            "code": 0,
+            "status": "succeed",
+            "data": data,
         }
 
     def get_position(self):
         self.switch_to_normal()
-        hot_key(['F1'])
-        hot_key(['F6'])
+        hot_key(["F1"])
+        hot_key(["F6"])
         self.refresh()
         hwnd = self.get_right_hwnd()
         ctrl = win32gui.GetDlgItem(hwnd, 0x417)
 
-        self.copy_table(ctrl)
-
         data = None
         retry = 0
         while not data and retry < retry_time:
+            self.copy_table(ctrl)
             retry += 1
             time.sleep(sleep_time)
             data = get_clipboard_data()
         if data:
             return {
-                'code': 0, 'status': 'succeed',
-                'data': parse_table(data),
+                "code": 0,
+                "status": "succeed",
+                "data": parse_table(data),
             }
-        return {'code': 1, 'status': 'failed'}
+        return {"code": 1, "status": "failed"}
 
     def get_active_orders(self):
         self.switch_to_normal()
-        hot_key(['F1'])
-        hot_key(['F8'])
+        hot_key(["F1"])
+        hot_key(["F8"])
         self.refresh()
         hwnd = self.get_right_hwnd()
         ctrl = win32gui.GetDlgItem(hwnd, 0x417)
@@ -216,15 +223,16 @@ class ThsAuto:
             data = get_clipboard_data()
         if data:
             return {
-                'code': 0, 'status': 'succeed',
-                'data': parse_table(data),
+                "code": 0,
+                "status": "succeed",
+                "data": parse_table(data),
             }
-        return {'code': 1, 'status': 'failed'}
+        return {"code": 1, "status": "failed"}
 
     def get_filled_orders(self):
         self.switch_to_normal()
-        hot_key(['F2'])
-        hot_key(['F7'])
+        hot_key(["F2"])
+        hot_key(["F7"])
         self.refresh()
         hwnd = self.get_right_hwnd()
         ctrl = win32gui.GetDlgItem(hwnd, 0x417)
@@ -239,14 +247,15 @@ class ThsAuto:
             data = get_clipboard_data()
         if data:
             return {
-                'code': 0, 'status': 'succeed',
-                'data': parse_table(data),
+                "code": 0,
+                "status": "succeed",
+                "data": parse_table(data),
             }
-        return {'code': 1, 'status': 'failed'}
+        return {"code": 1, "status": "failed"}
 
     def sell(self, stock_no, amount, price):
         self.switch_to_normal()
-        hot_key(['F2'])
+        hot_key(["F2"])
         time.sleep(sleep_time)
         hwnd = self.get_right_hwnd()
         ctrl = win32gui.GetDlgItem(hwnd, 0x408)
@@ -254,33 +263,33 @@ class ThsAuto:
         time.sleep(sleep_time)
         if price is not None:
             time.sleep(sleep_time)
-            price = '%.3f' % price
+            price = "%.3f" % price
             ctrl = win32gui.GetDlgItem(hwnd, 0x409)
             set_text(ctrl, price)
             time.sleep(sleep_time)
         ctrl = win32gui.GetDlgItem(hwnd, 0x40A)
         set_text(ctrl, str(amount))
         time.sleep(sleep_time)
-        hot_key(['enter'])
+        hot_key(["enter"])
         result = None
         retry = 0
         while retry < retry_time:
             time.sleep(sleep_time)
             result = self.get_result()
             if result:
-                hot_key(['enter'])
+                hot_key(["enter"])
                 return result
-            hot_key(['y'])
+            hot_key(["y"])
             retry += 1
         return {
-            'code': 2,
-            'status': 'unknown',
-            'msg': '获取结果失败,请自行确认订单状态',
+            "code": 2,
+            "status": "unknown",
+            "msg": "获取结果失败,请自行确认订单状态",
         }
 
     def buy(self, stock_no, amount, price):
         self.switch_to_normal()
-        hot_key(['F1'])
+        hot_key(["F1"])
         time.sleep(sleep_time)
         hwnd = self.get_right_hwnd()
         ctrl = win32gui.GetDlgItem(hwnd, 0x408)
@@ -288,28 +297,28 @@ class ThsAuto:
         time.sleep(sleep_time)
         if price is not None:
             time.sleep(sleep_time)
-            price = '%.3f' % price
+            price = "%.3f" % price
             ctrl = win32gui.GetDlgItem(hwnd, 0x409)
             set_text(ctrl, price)
             time.sleep(sleep_time)
         ctrl = win32gui.GetDlgItem(hwnd, 0x40A)
         set_text(ctrl, str(amount))
         time.sleep(sleep_time)
-        hot_key(['enter'])
+        hot_key(["enter"])
         result = None
         retry = 0
         while retry < retry_time:
             time.sleep(sleep_time)
             result = self.get_result()
             if result:
-                hot_key(['enter'])
+                hot_key(["enter"])
                 return result
-            hot_key(['y'])
+            hot_key(["y"])
             retry += 1
         return {
-            'code': 2,
-            'status': 'unknown',
-            'msg': '获取结果失败,请自行确认订单状态',
+            "code": 2,
+            "status": "unknown",
+            "msg": "获取结果失败,请自行确认订单状态",
         }
 
     def sell_kc(self, stock_no, amount, price):
@@ -321,28 +330,28 @@ class ThsAuto:
         time.sleep(sleep_time)
         if price is not None:
             time.sleep(sleep_time)
-            price = '%.3f' % price
+            price = "%.3f" % price
             ctrl = win32gui.GetDlgItem(hwnd, 0x409)
             set_text(ctrl, price)
             time.sleep(sleep_time)
         ctrl = win32gui.GetDlgItem(hwnd, 0x40A)
         set_text(ctrl, str(amount))
         time.sleep(sleep_time)
-        hot_key(['enter'])
+        hot_key(["enter"])
         result = None
         retry = 0
         while retry < retry_time:
             time.sleep(sleep_time)
             result = self.get_result()
             if result:
-                hot_key(['enter'])
+                hot_key(["enter"])
                 return result
-            hot_key(['y'])
+            hot_key(["y"])
             retry += 1
         return {
-            'code': 2,
-            'status': 'unknown',
-            'msg': '获取结果失败,请自行确认订单状态',
+            "code": 2,
+            "status": "unknown",
+            "msg": "获取结果失败,请自行确认订单状态",
         }
 
     def buy_kc(self, stock_no, amount, price):
@@ -354,33 +363,33 @@ class ThsAuto:
         time.sleep(sleep_time)
         if price is not None:
             time.sleep(sleep_time)
-            price = '%.3f' % price
+            price = "%.3f" % price
             ctrl = win32gui.GetDlgItem(hwnd, 0x409)
             set_text(ctrl, price)
             time.sleep(sleep_time)
         ctrl = win32gui.GetDlgItem(hwnd, 0x40A)
         set_text(ctrl, str(amount))
         time.sleep(sleep_time)
-        hot_key(['enter'])
+        hot_key(["enter"])
         result = None
         retry = 0
         while retry < retry_time:
             time.sleep(sleep_time)
             result = self.get_result()
             if result:
-                hot_key(['enter'])
+                hot_key(["enter"])
                 return result
-            hot_key(['y'])
+            hot_key(["y"])
             retry += 1
         return {
-            'code': 2,
-            'status': 'unknown',
-            'msg': '获取结果失败,请自行确认订单状态',
+            "code": 2,
+            "status": "unknown",
+            "msg": "获取结果失败,请自行确认订单状态",
         }
 
     def cancel(self, entrust_no):
         self.switch_to_normal()
-        hot_key(['F3'])
+        hot_key(["F3"])
         self.refresh()
         hwnd = self.get_right_hwnd()
         ctrl = win32gui.GetDlgItem(hwnd, 0x417)
@@ -397,11 +406,11 @@ class ThsAuto:
             entrusts = parse_table(data)
             find = None
             for i, entrust in enumerate(entrusts):
-                if str(entrust['合同编号']) == str(entrust_no):
+                if str(entrust["合同编号"]) == str(entrust_no):
                     find = i
                     break
             if find is None:
-                return {'code': 1, 'status': 'failed', 'msg': u'没找到指定订单'}
+                return {"code": 1, "status": "failed", "msg": "没找到指定订单"}
             left, top, right, bottom = win32gui.GetWindowRect(ctrl)
             x = 50 + left
             y = 30 + 16 * find + top
@@ -412,23 +421,25 @@ class ThsAuto:
             win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
             win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
             time.sleep(sleep_time)
-            hot_key(['enter'])
-            return {'code': 0, 'status': 'succeed'}
-        return {'code': 1, 'status': 'failed'}
+            hot_key(["enter"])
+            return {"code": 0, "status": "succeed"}
+        return {"code": 1, "status": "failed"}
 
     def get_result(self, cid=0x3EC):
         tid, pid = win32process.GetWindowThreadProcessId(self.hwnd_main)
 
         def enum_children(hwnd, results):
             try:
-                if (win32gui.IsWindowVisible(hwnd) and win32gui.IsWindowEnabled(hwnd)):
+                if win32gui.IsWindowVisible(hwnd) and win32gui.IsWindowEnabled(hwnd):
                     win32gui.EnumChildWindows(hwnd, handler, results)
             except Exception:
                 return
 
         def handler(hwnd, results):
-            if (win32api.GetWindowLong(hwnd, win32con.GWL_ID) == cid and
-                    win32gui.GetClassName(hwnd) == 'Static'):
+            if (
+                win32api.GetWindowLong(hwnd, win32con.GWL_ID) == cid
+                and win32gui.GetClassName(hwnd) == "Static"
+            ):
                 results.append(hwnd)
                 return False
             enum_children(hwnd, results)
@@ -443,25 +454,25 @@ class ThsAuto:
         if popups:
             ctrl = popups[0]
             text = get_text(ctrl)
-            if u'已成功提交' in text:
+            if "已成功提交" in text:
                 return {
-                    'code': 0,
-                    'status': 'succeed',
-                    'msg': text,
-                    'entrust_no': text.split(u'合同编号：')[1].split('。')[0],
+                    "code": 0,
+                    "status": "succeed",
+                    "msg": text,
+                    "entrust_no": text.split("合同编号：")[1].split("。")[0],
                 }
             else:
                 return {
-                    'code': 1,
-                    'status': 'failed',
-                    'msg': text,
+                    "code": 1,
+                    "status": "failed",
+                    "msg": text,
                 }
 
     def refresh(self):
-        hot_key(['F5'])
+        hot_key(["F5"])
         time.sleep(refresh_sleep_time)
 
-    def active_mian_window(self):
+    def active_main_window(self):
         if self.hwnd_main is not None:
             ctypes.windll.user32.SwitchToThisWindow(self.hwnd_main, True)
             time.sleep(sleep_time)
@@ -475,10 +486,10 @@ class ThsAuto:
         win32api.mouse_event(win32con.MOUSEEVENTF_RIGHTUP, 0, 0, 0, 0)
         time.sleep(sleep_time)
         if idx is not None:
-            while (idx >= 0):
-                hot_key(['down_arrow'])
+            while idx >= 0:
+                hot_key(["down_arrow"])
                 idx -= 1
-            hot_key(['enter'])
+            hot_key(["enter"])
         elif hot_key is not None:
             if isinstance(key, list):
                 hot_key(key)
@@ -486,6 +497,7 @@ class ThsAuto:
                 hot_key([key])
 
     def switch_to_normal(self):
+        hot_key("esc")
         tabs = self.get_left_bottom_tabs()
         left, top, right, bottom = win32gui.GetWindowRect(tabs)
         x = left + 10
@@ -529,18 +541,17 @@ class ThsAuto:
 
     def copy_table(self, hwnd):
         win32gui.SetForegroundWindow(hwnd)
-        os.system('echo off | clip')
-        hot_key(['ctrl', 'c'])
+        os.system("echo off | clip")
+        hot_key(["ctrl", "c"])
         self.input_ocr()
 
     def input_ocr(self):
         ocr = self.get_ocr_hwnd()
         i = 0
         while ocr > 0 and i < 10:
-            self.capture_window(ocr, 'ocr.png')
+            self.capture_window(ocr, "ocr.png")
             # data = Image.open('ocr.png')
-            import baidu_ocr
-            code = baidu_ocr.ocr('ocr.png')
+            code = baidu_ocr.ocr("ocr.png")
             print(code)
             # code = DdddOcr.classification(data)
             # code = pytesseract.image_to_string(data, lang='eng').strip()
@@ -548,11 +559,13 @@ class ThsAuto:
             ctrl = ctypes.windll.user32.GetWindow(ctrl, win32con.GW_HWNDNEXT)
             ctrl = ctypes.windll.user32.GetWindow(ctrl, win32con.GW_HWNDNEXT)
             set_text(ctrl, code)
-            hot_key(['enter'])
+            hot_key(["enter"])
 
             i += 1
-            err_text = get_text(ctypes.windll.user32.GetWindow(ocr, win32con.GW_HWNDNEXT))
-            if u'验证码错误' in err_text:
+            err_text = get_text(
+                ctypes.windll.user32.GetWindow(ocr, win32con.GW_HWNDNEXT)
+            )
+            if "验证码错误" in err_text:
                 left, top, right, bottom = win32gui.GetWindowRect(ocr)
                 win32api.SetCursorPos(((left + right) // 2, (top + bottom) // 2))
                 win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
@@ -576,7 +589,9 @@ class ThsAuto:
 
         info = bmp.GetInfo()
         bits = bmp.GetBitmapBits(True)
-        img = Image.frombuffer("RGB", (info['bmWidth'], info['bmHeight']), bits, 'raw', 'BGRX', 0, 1)
+        img = Image.frombuffer(
+            "RGB", (info["bmWidth"], info["bmHeight"]), bits, "raw", "BGRX", 0, 1
+        )
 
         win32gui.DeleteObject(bmp.GetHandle())
         dc.DeleteDC()
