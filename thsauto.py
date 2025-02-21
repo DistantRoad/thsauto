@@ -2,8 +2,13 @@ import ctypes
 import os
 import time
 from decimal import Decimal
+import logging
 
-import baidu_ocr
+
+# Configure logging
+logging.basicConfig(
+    format="%(asctime)s - %(message)s", level=logging.INFO, datefmt="%Y-%m-%d %H:%M:%S"
+)
 import win32api
 import win32clipboard
 import win32con
@@ -13,6 +18,7 @@ import win32ui
 from PIL import Image
 
 from const import VK_CODE, BALANCE_CONTROL_ID_GROUP
+import grok_ocr
 
 # import ddddocr
 # DdddOcr = ddddocr.DdddOcr()
@@ -161,6 +167,7 @@ class ThsAuto:
         return 0
 
     def get_balance(self):
+        logging.info("开始获取账户余额信息...")
         self.switch_to_normal()
         hot_key(["F4"])
         self.refresh()
@@ -176,6 +183,7 @@ class ThsAuto:
                 - Decimal(data["股票市值"])
                 - Decimal(data["冻结金额"])
             )
+        logging.info("账户余额信息获取成功")
         return {
             "code": 0,
             "status": "succeed",
@@ -183,6 +191,7 @@ class ThsAuto:
         }
 
     def get_position(self):
+        logging.info("开始获取持仓信息...")
         self.switch_to_normal()
         hot_key(["F1"])
         hot_key(["F6"])
@@ -198,14 +207,17 @@ class ThsAuto:
             time.sleep(sleep_time)
             data = get_clipboard_data()
         if data:
+            logging.info("持仓信息获取成功")
             return {
                 "code": 0,
                 "status": "succeed",
                 "data": parse_table(data),
             }
+        logging.info("持仓信息获取失败")
         return {"code": 1, "status": "failed"}
 
     def get_active_orders(self):
+        logging.info("开始获取当前委托信息...")
         self.switch_to_normal()
         hot_key(["F1"])
         hot_key(["F8"])
@@ -222,14 +234,17 @@ class ThsAuto:
             time.sleep(sleep_time)
             data = get_clipboard_data()
         if data:
+            logging.info("当前委托信息获取成功")
             return {
                 "code": 0,
                 "status": "succeed",
                 "data": parse_table(data),
             }
+        logging.info("当前委托信息获取失败")
         return {"code": 1, "status": "failed"}
 
     def get_filled_orders(self):
+        logging.info("开始获取历史成交信息...")
         self.switch_to_normal()
         hot_key(["F2"])
         hot_key(["F7"])
@@ -246,14 +261,19 @@ class ThsAuto:
             time.sleep(sleep_time)
             data = get_clipboard_data()
         if data:
+            logging.info("历史成交信息获取成功")
             return {
                 "code": 0,
                 "status": "succeed",
                 "data": parse_table(data),
             }
+        logging.info("历史成交信息获取失败")
         return {"code": 1, "status": "failed"}
 
     def sell(self, stock_no, amount, price):
+        logging.info(
+            f"开始卖出操作，股票代码: {stock_no}, 数量: {amount}, 价格: {price}"
+        )
         self.switch_to_normal()
         hot_key(["F2"])
         time.sleep(sleep_time)
@@ -278,9 +298,11 @@ class ThsAuto:
             result = self.get_result()
             if result:
                 hot_key(["enter"])
+                logging.info("卖出操作成功")
                 return result
             hot_key(["y"])
             retry += 1
+        logging.info("卖出操作失败")
         return {
             "code": 2,
             "status": "unknown",
@@ -288,6 +310,9 @@ class ThsAuto:
         }
 
     def buy(self, stock_no, amount, price):
+        logging.info(
+            f"开始买入操作，股票代码: {stock_no}, 数量: {amount}, 价格: {price}"
+        )
         self.switch_to_normal()
         hot_key(["F1"])
         time.sleep(sleep_time)
@@ -312,9 +337,11 @@ class ThsAuto:
             result = self.get_result()
             if result:
                 hot_key(["enter"])
+                logging.info("买入操作成功")
                 return result
             hot_key(["y"])
             retry += 1
+        logging.info("买入操作失败")
         return {
             "code": 2,
             "status": "unknown",
@@ -322,6 +349,9 @@ class ThsAuto:
         }
 
     def sell_kc(self, stock_no, amount, price):
+        logging.info(
+            f"开始科创板卖出操作，股票代码: {stock_no}, 数量: {amount}, 价格: {price}"
+        )
         self.switch_to_kechuang()
         self.click_kc_sell()
         hwnd = self.get_right_hwnd()
@@ -345,9 +375,11 @@ class ThsAuto:
             result = self.get_result()
             if result:
                 hot_key(["enter"])
+                logging.info("科创板卖出操作成功")
                 return result
             hot_key(["y"])
             retry += 1
+        logging.info("科创板卖出操作失败")
         return {
             "code": 2,
             "status": "unknown",
@@ -355,6 +387,9 @@ class ThsAuto:
         }
 
     def buy_kc(self, stock_no, amount, price):
+        logging.info(
+            f"开始科创板买入操作，股票代码: {stock_no}, 数量: {amount}, 价格: {price}"
+        )
         self.switch_to_kechuang()
         self.click_kc_buy()
         hwnd = self.get_right_hwnd()
@@ -378,9 +413,11 @@ class ThsAuto:
             result = self.get_result()
             if result:
                 hot_key(["enter"])
+                logging.info("科创板买入操作成功")
                 return result
             hot_key(["y"])
             retry += 1
+        print("科创板买入操作失败")
         return {
             "code": 2,
             "status": "unknown",
@@ -388,6 +425,7 @@ class ThsAuto:
         }
 
     def cancel(self, entrust_no):
+        logging.info(f"开始撤单操作，委托编号: {entrust_no}")
         self.switch_to_normal()
         hot_key(["F3"])
         self.refresh()
@@ -410,6 +448,7 @@ class ThsAuto:
                     find = i
                     break
             if find is None:
+                print("未找到指定委托")
                 return {"code": 1, "status": "failed", "msg": "没找到指定订单"}
             left, top, right, bottom = win32gui.GetWindowRect(ctrl)
             x = 50 + left
@@ -422,7 +461,9 @@ class ThsAuto:
             win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
             time.sleep(sleep_time)
             hot_key(["enter"])
+            logging.info("撤单操作成功")
             return {"code": 0, "status": "succeed"}
+        logging.info("撤单操作失败")
         return {"code": 1, "status": "failed"}
 
     def get_result(self, cid=0x3EC):
@@ -551,8 +592,9 @@ class ThsAuto:
         while ocr > 0 and i < 10:
             self.capture_window(ocr, "ocr.png")
             # data = Image.open('ocr.png')
-            code = baidu_ocr.ocr("ocr.png")
-            print(code)
+            # code = baidu_ocr.ocr("ocr.png")
+            code = grok_ocr.ocr("ocr.png")
+            logging.info(f"OCR识别结果: {code}")
             # code = DdddOcr.classification(data)
             # code = pytesseract.image_to_string(data, lang='eng').strip()
             ctrl = ctypes.windll.user32.GetWindow(ocr, win32con.GW_HWNDNEXT)
