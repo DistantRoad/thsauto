@@ -33,7 +33,7 @@ def ocr(image_path: str) -> str:
                 "content": [
                     {
                         "type": "text",
-                        "text": "What's in this image? Response the characters only, without spaces.",
+                        "text": "What's in this image? Response the characters only, without spaces in characters.",
                     },
                     {
                         "type": "image_url",
