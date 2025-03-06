@@ -538,7 +538,7 @@ class ThsAuto:
                 hot_key([key])
 
     def switch_to_normal(self):
-        hot_key("esc")
+        hot_key(["esc"])
         tabs = self.get_left_bottom_tabs()
         left, top, right, bottom = win32gui.GetWindowRect(tabs)
         x = left + 10
