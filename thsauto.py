@@ -18,7 +18,7 @@ import win32ui
 from PIL import Image
 
 from const import VK_CODE, BALANCE_CONTROL_ID_GROUP
-import grok_ocr
+import llm_ocr
 
 # import ddddocr
 # DdddOcr = ddddocr.DdddOcr()
@@ -593,7 +593,7 @@ class ThsAuto:
             self.capture_window(ocr, "ocr.png")
             # data = Image.open('ocr.png')
             # code = baidu_ocr.ocr("ocr.png")
-            code = grok_ocr.ocr("ocr.png")
+            code = llm_ocr.ocr("ocr.png")
             logging.info(f"OCR识别结果: {code}")
             # code = DdddOcr.classification(data)
             # code = pytesseract.image_to_string(data, lang='eng').strip()
