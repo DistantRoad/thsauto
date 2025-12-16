@@ -6,11 +6,8 @@ import ssl
 
 # 配置常量
 API_KEY = "sk-AqjcrzF1uR3G9NBICeB1A1Af71984f4eA6D4182bE167B60d"  # 替换为你的实际API密钥
-API_URL = "one-api.distantroad.win"  # API服务器地址
-MODEL_NAME = "gemini-2.5-flash-preview-04-17"
-# API_KEY = "xai-50ZCwcrsIWAcRARytjVMQopQ99vxiEj94iMmmTenWgcg6JlF9ZREKb0ZSEvWK9KpbfqaFhqCmSsdQP2C"  # 替换为你的实际API密钥
-# API_URL = "api.x.ai"  # API服务器地址
-# MODEL_NAME = "grok-2-vision-1212"
+API_URL = "new-api.distantroad.win"  # API服务器地址
+MODEL_NAME = "gemini-2.5-flash"
 PROMPT_TEXT = "What's in this image? Response the characters only, without spaces in characters."
 
 
