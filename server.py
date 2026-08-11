@@ -1,6 +1,8 @@
 import functools
+import logging
 from flask import Flask, request, jsonify
 from thsauto import ThsAuto
+import subprocess
 import time
 import sys
 import threading
@@ -15,9 +17,53 @@ auto = ThsAuto()
 
 client_path = None
 def run_client():
-    os.chdir(os.path.dirname(client_path))
+    if not client_path:
+        raise RuntimeError('未提供客户端路径，无法启动同花顺客户端')
+    workdir = os.path.dirname(client_path)
     executable_path = os.path.basename(client_path)
-    os.system('start ' + executable_path)
+    logging.info("准备启动客户端: path=%s workdir=%s", client_path, workdir)
+    subprocess.Popen(["cmd", "/c", "start", "", executable_path], cwd=workdir)
+
+
+def wait_for_client_bind(max_wait_time=30, bind_timeout=2):
+    logging.info(
+        "开始等待客户端绑定: max_wait_time=%ss bind_timeout=%ss",
+        max_wait_time,
+        bind_timeout,
+    )
+    for second in range(max_wait_time):
+        auto.bind_client(timeout=bind_timeout, log_failure=False)
+        if auto.hwnd_main is not None:
+            logging.info(
+                "客户端绑定完成: elapsed=%ss hwnd=%s",
+                second + 1,
+                auto.hwnd_main,
+            )
+            return True
+        time.sleep(1)
+    logging.info("客户端绑定超时: max_wait_time=%ss", max_wait_time)
+    return False
+
+
+def restart_client_process(max_wait_time=30):
+    logging.info("开始执行客户端重启流程")
+    auto.kill_client()
+    run_client()
+    return wait_for_client_bind(max_wait_time=max_wait_time, bind_timeout=2)
+
+
+def ensure_client_started(max_wait_time=30):
+    logging.info("启动阶段检查客户端是否已运行")
+    auto.bind_client(timeout=2, log_failure=False)
+    if auto.hwnd_main is not None:
+        logging.info("启动阶段已检测到客户端主窗口: hwnd=%s", auto.hwnd_main)
+        return True
+    if not client_path:
+        logging.info("启动阶段未提供客户端路径，跳过自动拉起")
+        return False
+    logging.info("启动阶段未检测到客户端，准备自动拉起")
+    run_client()
+    return wait_for_client_bind(max_wait_time=max_wait_time, bind_timeout=2)
 
 lock = threading.Lock()
 next_time = 0
@@ -32,11 +78,22 @@ def interval_call(func):
         now = time.time()
         if now < next_time:
             time.sleep(next_time - now)
+        start_time = time.time()
+        logging.info(
+            "HTTP请求开始: path=%s method=%s args=%s",
+            request.path,
+            request.method,
+            dict(request.args),
+        )
         try:
             rt = func(*args, **kwargs)
         except Exception as e:
+            logging.exception("HTTP请求异常: path=%s", request.path)
             traceback.print_exc()
             rt = ({'code': 1, 'status': 'failed', 'msg': '{}'.format(e)}, 400)
+        finally:
+            elapsed = time.time() - start_time
+            logging.info("HTTP请求结束: path=%s elapsed=%.2fs", request.path, elapsed)
         next_time = time.time() + interval
         lock.release()
         return rt
@@ -138,14 +195,9 @@ def kill_client():
 @interval_call
 def restart_client():
     auto.active_main_window()
-    auto.kill_client()
-    run_client()
     max_wait_time = 30
-    for _ in range(max_wait_time):
-        auto.bind_client()
-        if auto.hwnd_main is not None:
-            return jsonify({'code': 0, 'status': 'succeed'}), 200
-        time.sleep(1)
+    if restart_client_process(max_wait_time=max_wait_time):
+        return jsonify({'code': 0, 'status': 'succeed'}), 200
     return jsonify({'code': 1, 'status': 'failed', 'message': f'Client failed to start within {max_wait_time} seconds'}), 200
 
 
@@ -166,7 +218,5 @@ if __name__ == '__main__':
         port = int(sys.argv[2])
     if len(sys.argv) > 3:
         client_path = sys.argv[3]
-    auto.bind_client()
-    if auto.hwnd_main is None and client_path is not None:
-        restart_client()
+    ensure_client_started(max_wait_time=30)
     app.run(host=host, port=port)

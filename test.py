@@ -2,10 +2,11 @@ from pywinauto import Application
 from pywinauto.findwindows import ElementNotFoundError
 
 WINDOW_TITLE = "网上股票交易系统5.0"
+TREE_CONTROL_ID = 129
 
 def connect_to_app():
     try:
-        app = Application(backend="uia").connect(title=WINDOW_TITLE)
+        app = Application(backend="win32").connect(title=WINDOW_TITLE)
         main_window = app.window(title=WINDOW_TITLE)
         if not main_window.is_visible():
             raise ValueError("窗口不可见。请确保窗口未最小化。")
@@ -15,7 +16,7 @@ def connect_to_app():
 
 def find_tree_view(main_window):
     try:
-        return main_window.child_window(control_type="Tree")
+        return main_window.child_window(control_id=TREE_CONTROL_ID, class_name="SysTreeView32")
     except ElementNotFoundError:
         raise ValueError("无法找到TreeView控件")
 
@@ -26,23 +27,7 @@ def click_menu_item(tree_view, menu_path):
     :param menu_path: 菜单路径列表，例如 ["三方存管", "银证转账"]
     """
     try:
-        current_item = tree_view
-        for i, item_text in enumerate(menu_path):
-            # 查找指定文本的子项
-            item = current_item.child_window(title=item_text)
-            if not item.exists():
-                raise ValueError(f"无法找到菜单项：{item_text}")
-            
-            # 如果不是最后一个项目，则展开当前项
-            if i < len(menu_path) - 1:
-                item.expand()
-                print(f"展开菜单项：{item_text}")
-            # 如果是最后一个项目，则点击
-            else:
-                item.click_input()
-                print(f"点击菜单项：{item_text}")
-            
-            current_item = item
+        tree_view.get_item(menu_path).select()
         print(f"成功导航到：{' -> '.join(menu_path)}")
     except Exception as e:
         raise ValueError(f"操作菜单项时出错：{str(e)}")

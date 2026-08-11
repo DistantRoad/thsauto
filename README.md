@@ -22,11 +22,10 @@ thsauto是一个基于Python开发的同花顺自动下单工具，通过模拟�
 1. 克隆或下载本项目到本地
 2. 安装依赖库：
    ```
-   pip install flask pillow pywin32
+   pip install flask pillow pywinauto
    ```
 3. 如需使用OCR功能，请配置相应的API密钥：
-   - 对于百度OCR，在`baidu_ocr.py`中配置API_KEY和SECRET_KEY
-   - 对于Grok OCR，在`grok_ocr.py`中配置API_KEY
+   - 在`llm_ocr.py`中配置对应的OCR接口参数
 
 ## 使用方法
 
@@ -88,7 +87,7 @@ python server.py 192.168.0.116 5000 C:\Users\match\Desktop\THS\xiadan.exe
 
 ## 技术实现
 
-- **界面自动化**：使用win32api、win32gui等Windows API实现界面操作
+- **界面自动化**：使用pywinauto进行窗口绑定、控件定位、输入、点击和截图
 - **OCR识别**：支持Grok AI和百度OCR服务，用于识别验证码等图像内容
 - **Web API**：使用Flask框架提供RESTful API
 

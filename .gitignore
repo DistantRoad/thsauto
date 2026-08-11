@@ -2,6 +2,8 @@
 **/__pycache__
 **/.vscode
 ocr.png
+ocr_*.png
+*.log
 .aider*
 .DS_Store
 .gitignore
