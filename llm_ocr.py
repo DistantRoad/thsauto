@@ -15,8 +15,7 @@ from urllib.parse import unquote, urlparse
 # 配置常量
 API_KEY = "sk-AqjcrzF1uR3G9NBICeB1A1Af71984f4eA6D4182bE167B60d"  # 替换为你的实际API密钥
 API_URL = "new-api.distantroad.win"  # API服务器地址
-# MODEL_NAME = "gemini-2.5-flash"
-MODEL_NAME = "gemini-3.1-flash-lite"
+MODEL_NAME = "gemini-3.5-flash-lite"
 PROMPT_TEXT = (
     "Read the captcha characters exactly as shown. Preserve uppercase/lowercase exactly."
     " Return the characters only, with no spaces or extra text."
@@ -182,9 +181,7 @@ def _request_ocr(image_bytes: bytes, media_type: str, image_source: str) -> str:
                     },
                     {
                         "type": "image_url",
-                        "image_url": {
-                            "url": f"data:{media_type};base64,{image_data}"
-                        },
+                        "image_url": {"url": f"data:{media_type};base64,{image_data}"},
                     },
                 ],
             }
