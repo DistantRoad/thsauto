@@ -1271,8 +1271,8 @@ class ThsAuto:
                 logging.exception("验证码控件定位失败")
                 return
 
-            ocr_file_name = "ocr_%d_%d.png" % (int(time.time() * 1000), retry + 1)
-            if not self.capture_window(image, ocr_file_name, dialog=dialog):
+            captcha_image = self.capture_window(image)
+            if captcha_image is None:
                 logging.info("验证码截图仍为空白，刷新验证码后重试")
                 retry += 1
                 try:
@@ -1283,7 +1283,7 @@ class ThsAuto:
                 time.sleep(sleep_time)
                 continue
             try:
-                code = (llm_ocr.ocr(ocr_file_name) or "").strip()
+                code = (llm_ocr.ocr_image(captcha_image) or "").strip()
             except Exception as exc:
                 logging.exception("验证码OCR调用失败: attempt=%d", retry + 1)
                 retry += 1
@@ -1296,6 +1296,11 @@ class ThsAuto:
                     logging.exception("验证码图片刷新失败")
                 time.sleep(sleep_time)
                 continue
+            finally:
+                try:
+                    captcha_image.close()
+                except Exception:
+                    logging.exception("释放验证码截图内存失败")
 
             logging.info("OCR识别结果: %r", code)
             if not code:
@@ -1351,62 +1356,37 @@ class ThsAuto:
         logging.info("验证码处理失败: 已达到最大重试次数")
         raise RuntimeError("验证码识别失败，已达到最大重试次数，请查看日志排查")
 
-    def capture_window(self, hwnd, file_name, dialog=None):
+    def capture_window(self, hwnd):
+        """截取控件并返回Pillow图片对象，全程不写入工作目录。"""
         control = _resolve_wrapper(hwnd)
         rect = control.rectangle()
         logging.info(
-            "开始截图: handle=%s class=%s output=%s rect=(%d,%d,%d,%d)",
+            "开始截图: handle=%s class=%s rect=(%d,%d,%d,%d)",
             getattr(control, "handle", "unknown"),
             _class_name(control),
-            file_name,
             rect.left,
             rect.top,
             rect.right,
             rect.bottom,
         )
 
-        image = None
         try:
             image = ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom))
-            image.save(file_name)
-            logging.info(
-                "屏幕区域截图完成: output=%s has_content=%s",
-                file_name,
-                self._image_has_content(image),
-            )
+            has_content = self._image_has_content(image)
+            logging.info("屏幕区域截图完成: has_content=%s", has_content)
+            if has_content:
+                return image
         except Exception:
             logging.exception("屏幕区域截图失败: handle=%s", getattr(control, "handle", "unknown"))
 
-        if image is not None and self._image_has_content(image):
-            return True
-
-        if dialog is not None:
-            try:
-                dialog_rect = dialog.rectangle()
-                debug_file_name = "%s_dialog.png" % os.path.splitext(file_name)[0]
-                dialog_image = ImageGrab.grab(
-                    bbox=(dialog_rect.left, dialog_rect.top, dialog_rect.right, dialog_rect.bottom)
-                )
-                dialog_image.save(debug_file_name)
-                logging.info(
-                    "验证码控件截图疑似空白，已保存整窗调试图: %s",
-                    debug_file_name,
-                )
-            except Exception:
-                logging.exception("保存整窗调试图失败: dialog=%s", getattr(dialog, "handle", "unknown"))
-
         try:
             image = control.capture_as_image()
-            image.save(file_name)
-            logging.info(
-                "回退控件截图完成: output=%s has_content=%s",
-                file_name,
-                self._image_has_content(image),
-            )
-            return self._image_has_content(image)
+            has_content = self._image_has_content(image)
+            logging.info("回退控件截图完成: has_content=%s", has_content)
+            return image if has_content else None
         except Exception:
             logging.exception("回退控件截图失败: handle=%s", getattr(control, "handle", "unknown"))
-            return False
+            return None
 
     def test(self):
         pass

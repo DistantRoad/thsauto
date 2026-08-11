@@ -2,11 +2,13 @@ import http.client
 import ipaddress
 import json
 import logging
+import mimetypes
 import os
 import socket
 import ssl
 import time
 from base64 import b64encode
+from io import BytesIO
 from urllib.parse import unquote, urlparse
 
 
@@ -156,32 +158,18 @@ class SocksHTTPSConnection(http.client.HTTPSConnection):
         self.sock = self._context.wrap_socket(raw_sock, server_hostname=self.host)
 
 
-def ocr(image_path: str) -> str:
-    """
-    使用OpenAI兼容的OCR接口识别图片中的文字
-
-    Args:
-        image_path: 图片文件路径
-        api_key: OpenAI API密钥
-        api_url: API服务器地址，默认为api.openai.com
-
-    Returns:
-        识别出的文字内容
-    """
+def _request_ocr(image_bytes: bytes, media_type: str, image_source: str) -> str:
     logging.info(
-        "OCR请求开始: image_path=%s model=%s timeout=%.1fs proxy=%s",
-        image_path,
+        "OCR请求开始: image_source=%s image_bytes=%d model=%s timeout=%.1fs proxy=%s",
+        image_source,
+        len(image_bytes),
         MODEL_NAME,
         REQUEST_TIMEOUT,
         OCR_PROXY_URL or "disabled",
     )
     start_time = time.time()
+    image_data = b64encode(image_bytes).decode("utf-8")
 
-    # 读取图片文件并编码为base64
-    with open(image_path, "rb") as image_file:
-        image_data = b64encode(image_file.read()).decode("utf-8")
-
-    # 构建请求体
     payload = {
         "model": MODEL_NAME,
         "messages": [
@@ -194,7 +182,9 @@ def ocr(image_path: str) -> str:
                     },
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{image_data}"},
+                        "image_url": {
+                            "url": f"data:{media_type};base64,{image_data}"
+                        },
                     },
                 ],
             }
@@ -202,7 +192,6 @@ def ocr(image_path: str) -> str:
         "max_tokens": 300,
     }
 
-    # 创建HTTP连接，禁用SSL验证
     context = ssl._create_unverified_context()
     conn = SocksHTTPSConnection(
         API_URL,
@@ -210,17 +199,12 @@ def ocr(image_path: str) -> str:
         context=context,
         proxy_url=OCR_PROXY_URL or None,
     )
-
-    # 设置请求头
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
 
-    # 发送POST请求
     try:
         conn.request(
             "POST", "/v1/chat/completions", body=json.dumps(payload), headers=headers
         )
-
-        # 获取响应
         response = conn.getresponse()
         response_data = response.read().decode("utf-8")
         elapsed = time.time() - start_time
@@ -230,28 +214,41 @@ def ocr(image_path: str) -> str:
             elapsed,
             len(response_data),
         )
-
-        # 检查响应状态
         if response.status != 200:
             raise Exception(
                 f"API request failed with status {response.status}: {response_data}"
             )
 
-        # 解析响应
         result = json.loads(response_data)
         content = result["choices"][0]["message"]["content"]
         logging.info("OCR识别原始结果: %r", content)
         return content
     except Exception:
         logging.exception(
-            "OCR请求失败: image_path=%s api_url=%s timeout=%.1fs",
-            image_path,
+            "OCR请求失败: image_source=%s api_url=%s timeout=%.1fs",
+            image_source,
             API_URL,
             REQUEST_TIMEOUT,
         )
         raise
     finally:
         conn.close()
+
+
+def ocr_image(image) -> str:
+    """直接识别Pillow图片对象，不在磁盘创建临时文件。"""
+    with BytesIO() as image_buffer:
+        image.save(image_buffer, format="PNG")
+        image_bytes = image_buffer.getvalue()
+    return _request_ocr(image_bytes, "image/png", "memory")
+
+
+def ocr(image_path: str) -> str:
+    """识别图片文件；保留该入口以兼容已有调用方。"""
+    with open(image_path, "rb") as image_file:
+        image_bytes = image_file.read()
+    media_type = mimetypes.guess_type(image_path)[0] or "application/octet-stream"
+    return _request_ocr(image_bytes, media_type, os.fspath(image_path))
 
 
 if __name__ == "__main__":
