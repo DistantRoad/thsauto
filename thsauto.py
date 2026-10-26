@@ -4,6 +4,7 @@ import os
 import subprocess
 import time
 from decimal import Decimal
+from logging.handlers import RotatingFileHandler
 from typing import Iterable
 
 from pywinauto import Application, clipboard, keyboard
@@ -13,6 +14,10 @@ from const import BALANCE_CONTROL_ID_GROUP
 import llm_ocr
 
 LOG_FILE_PATH = os.path.abspath(os.getenv("THSAUTO_LOG_FILE", "thsauto.log"))
+# 日志按大小轮转：超过上限后依次改名为 thsauto.log.1、thsauto.log.2……，最多保留 LOG_BACKUP_COUNT 个旧文件。
+# 旧文件个数至少为1，否则 RotatingFileHandler 无法截断当前文件，日志会无限增长。
+LOG_MAX_BYTES = int(os.getenv("THSAUTO_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
+LOG_BACKUP_COUNT = max(1, int(os.getenv("THSAUTO_LOG_BACKUP_COUNT", "10")))
 
 
 def _setup_logging():
@@ -39,7 +44,12 @@ def _setup_logging():
         for handler in root_logger.handlers
     )
     if not has_file:
-        file_handler = logging.FileHandler(LOG_FILE_PATH, encoding="utf-8")
+        file_handler = RotatingFileHandler(
+            LOG_FILE_PATH,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
 
