@@ -51,6 +51,13 @@ refresh_sleep_time = 0.5
 retry_time = 30
 
 window_title = "网上股票交易系统5.0"
+# 主窗口过小时（如宿主机重启后客户端以很小的窗口启动），底部持仓/成交/委托区域不可见，
+# F6/F7/F8 等快捷键切页失效，复制到的始终是持仓表。低于该尺寸时自动放大窗口。
+MIN_MAIN_WINDOW_WIDTH = 640
+MIN_MAIN_WINDOW_HEIGHT = 480
+TARGET_MAIN_WINDOW_WIDTH = 1024
+TARGET_MAIN_WINDOW_HEIGHT = 720
+TASKBAR_RESERVED_HEIGHT = 40
 
 RIGHT_PANEL_CONTROL_ID = 0xE901
 COMMON_GRID_CONTROL_ID = 0x417
@@ -1045,6 +1052,10 @@ class ThsAuto:
         ctrl = self._get_right_control(COMMON_GRID_CONTROL_ID, class_name="CVirtualGridCtrl")
 
         data = self._wait_clipboard_table(ctrl, copy_each_retry=False)
+        if data and "合同编号" not in data.split("\t\r\n", 1)[0].split("\t"):
+            # 切页失败时复制到的是其他表格（通常是持仓表），不能当作委托数据返回
+            logging.warning("当前委托表格缺少合同编号列，可能未切换到委托页面: header=%s", data.split("\t\r\n", 1)[0])
+            return {"code": 1, "status": "failed", "msg": "委托表格缺少合同编号列，客户端可能未切换到委托页面"}
         if data:
             logging.info("当前委托信息获取成功")
             return {
@@ -1184,12 +1195,37 @@ class ThsAuto:
                 self.main_window.restore()
             except Exception:
                 pass
+            self._ensure_main_window_size()
             self.main_window.set_focus()
             logging.info("主窗口激活成功: hwnd=%s", self.hwnd_main)
             time.sleep(sleep_time)
         except Exception:
             logging.exception("主窗口激活失败，尝试重新绑定")
             self.bind_client()
+
+    def _ensure_main_window_size(self):
+        try:
+            rect = self.main_window.rectangle()
+            width, height = rect.width(), rect.height()
+            if width >= MIN_MAIN_WINDOW_WIDTH and height >= MIN_MAIN_WINDOW_HEIGHT:
+                return
+            screen_width = ctypes.windll.user32.GetSystemMetrics(0)
+            screen_height = ctypes.windll.user32.GetSystemMetrics(1)
+            new_width = min(TARGET_MAIN_WINDOW_WIDTH, screen_width)
+            new_height = min(TARGET_MAIN_WINDOW_HEIGHT, screen_height - TASKBAR_RESERVED_HEIGHT)
+            logging.warning(
+                "主窗口尺寸过小，自动调整: 原尺寸=%dx%d 新尺寸=%dx%d 屏幕=%dx%d",
+                width,
+                height,
+                new_width,
+                new_height,
+                screen_width,
+                screen_height,
+            )
+            self.main_window.move_window(x=0, y=0, width=new_width, height=new_height, repaint=True)
+            time.sleep(refresh_sleep_time)
+        except Exception:
+            logging.exception("检查或调整主窗口尺寸失败")
 
     def right_click_menu(self, hwnd, x, y, idx=None, key=None):
         control = _resolve_wrapper(hwnd)
