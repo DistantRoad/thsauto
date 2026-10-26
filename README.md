@@ -90,6 +90,36 @@ python server.py [IP地址] [端口] [同花顺客户端路径]
 python server.py 0.0.0.0 5000 C:\Users\match\Desktop\THS\xiadan.exe
 ```
 
+### 自动更新部署
+
+适用于长期运行的 Windows 主机或虚拟机：每次启动时自动从 GitHub 拉取 master 分支的最新代码。涉及两个文件：
+
+- `start_ths_server.bat`：桌面引导脚本（GBK 编码、CRLF 换行），复制到桌面并设为开机自启。它只负责把 master 分支压缩包下载解压到 `%USERPROFILE%\thsauto\download`，然后调用其中的 `start_server.py`；下载失败时改为调用上次的 `code\start_server.py`。这个文件修改后需要逐台替换，尽量保持不变
+- `start_server.py`：启动逻辑。确认新代码完整后替换 `%USERPROFILE%\thsauto\code`（旧代码保留在 `code_old`），再以 `%USERPROFILE%\thsauto` 为工作目录启动 `server.py`。修改后推送到 GitHub，下次启动时生效
+
+运行目录结构：
+
+```
+%USERPROFILE%\thsauto\
+├── code\             当前运行的代码
+├── code_old\         上一版代码
+├── download\         本次启动下载的代码
+├── ocr_config.json   OCR 配置（见上文）
+└── thsauto.log       日志
+```
+
+`start_server.py` 的运行参数可以在桌面脚本中用环境变量覆盖：
+
+| 环境变量 | 说明 |
+|---|---|
+| `THSAUTO_HOME` | 运行目录，默认 `%USERPROFILE%\thsauto` |
+| `THSAUTO_HOST` | 监听地址，默认 `0.0.0.0` |
+| `THSAUTO_PORT` | 监听端口，默认 `6003` |
+| `THS_CLIENT_PATH` | 同花顺客户端路径，默认 `%USERPROFILE%\Desktop\同花顺\xiadan.exe` |
+| `THSAUTO_LOG_FILE` | 日志文件，默认 `%USERPROFILE%\thsauto\thsauto.log` |
+
+更新代码时，推送到 master 后结束机器上的 `py.exe` / `python.exe` 进程，再重新运行桌面脚本即可。注意：推送到 master 的代码会在每台机器下次启动（包括意外重启）时自动生效，推送前请确认代码可以正常运行。
+
 ### 返回格式
 
 所有接口均为 HTTP GET，返回 JSON：
