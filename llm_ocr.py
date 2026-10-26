@@ -13,7 +13,6 @@ from urllib.parse import unquote, urlparse
 
 
 # 配置常量
-API_KEY = "sk-AqjcrzF1uR3G9NBICeB1A1Af71984f4eA6D4182bE167B60d"  # 替换为你的实际API密钥
 API_URL = "new-api.distantroad.win"  # API服务器地址
 MODEL_NAME = "gemini-3.5-flash-lite"
 PROMPT_TEXT = (
@@ -21,10 +20,52 @@ PROMPT_TEXT = (
     " Return the characters only, with no spaces or extra text."
 )
 REQUEST_TIMEOUT = float(os.getenv("THSAUTO_OCR_TIMEOUT", "15"))
-OCR_PROXY_URL = os.getenv(
-    "THSAUTO_OCR_PROXY",
-    "socks5://wang:wdy988299@192.168.2.88:10888",
-).strip()
+# API Key、代理账号密码等敏感配置不能写在代码里（本仓库公开）。
+# 优先读环境变量，其次读本机配置文件；配置文件默认为 %USERPROFILE%\thsauto\ocr_config.json，
+# 可用环境变量 THSAUTO_OCR_CONFIG 指定路径，内容示例：
+# {"api_key": "sk-...", "proxy": "socks5://用户名:密码@主机:端口"}
+OCR_CONFIG_PATH = os.path.abspath(
+    os.path.expanduser(
+        os.getenv("THSAUTO_OCR_CONFIG", os.path.join("~", "thsauto", "ocr_config.json"))
+    )
+)
+
+
+def _load_local_config() -> dict:
+    try:
+        with open(OCR_CONFIG_PATH, encoding="utf-8") as config_file:
+            config = json.load(config_file)
+    except FileNotFoundError:
+        logging.warning("未找到OCR本机配置文件: %s", OCR_CONFIG_PATH)
+        return {}
+    except Exception:
+        logging.exception("读取OCR本机配置文件失败: %s", OCR_CONFIG_PATH)
+        return {}
+    if not isinstance(config, dict):
+        logging.warning("OCR本机配置文件格式无效（应为JSON对象）: %s", OCR_CONFIG_PATH)
+        return {}
+    return config
+
+
+def _get_setting(env_name: str, config_key: str, config: dict) -> str:
+    # 环境变量只要设置了（即使为空）就优先使用，便于临时禁用代理
+    value = os.getenv(env_name)
+    if value is None:
+        value = config.get(config_key) or ""
+    return str(value).strip()
+
+
+def _get_ocr_settings():
+    """每次请求时读取，修改配置文件后无需重启服务。"""
+    config = _load_local_config()
+    api_key = _get_setting("THSAUTO_OCR_API_KEY", "api_key", config)
+    proxy_url = _get_setting("THSAUTO_OCR_PROXY", "proxy", config)
+    if not api_key:
+        raise RuntimeError(
+            "未配置OCR API Key：请设置环境变量 THSAUTO_OCR_API_KEY，"
+            f"或在 {OCR_CONFIG_PATH} 中配置 api_key"
+        )
+    return api_key, proxy_url
 
 
 def _recv_exact(sock: socket.socket, size: int) -> bytes:
@@ -54,6 +95,14 @@ def _parse_proxy_url(proxy_url: str):
         "username": unquote(parsed.username) if parsed.username else None,
         "password": unquote(parsed.password) if parsed.password else None,
     }
+
+
+def _describe_proxy(proxy_url: str) -> str:
+    """日志里只显示代理主机和端口，隐藏账号密码。"""
+    if not proxy_url:
+        return "disabled"
+    parsed = urlparse(proxy_url)
+    return f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
 
 
 def _build_socks5_address(host: str) -> bytes:
@@ -158,13 +207,14 @@ class SocksHTTPSConnection(http.client.HTTPSConnection):
 
 
 def _request_ocr(image_bytes: bytes, media_type: str, image_source: str) -> str:
+    api_key, proxy_url = _get_ocr_settings()
     logging.info(
         "OCR请求开始: image_source=%s image_bytes=%d model=%s timeout=%.1fs proxy=%s",
         image_source,
         len(image_bytes),
         MODEL_NAME,
         REQUEST_TIMEOUT,
-        OCR_PROXY_URL or "disabled",
+        _describe_proxy(proxy_url),
     )
     start_time = time.time()
     image_data = b64encode(image_bytes).decode("utf-8")
@@ -194,9 +244,9 @@ def _request_ocr(image_bytes: bytes, media_type: str, image_source: str) -> str:
         API_URL,
         timeout=REQUEST_TIMEOUT,
         context=context,
-        proxy_url=OCR_PROXY_URL or None,
+        proxy_url=proxy_url or None,
     )
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
 
     try:
         conn.request(
