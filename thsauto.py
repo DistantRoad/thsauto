@@ -345,6 +345,48 @@ class ThsAuto:
         logging.info("检测到弹窗数量: %d", len(windows))
         return windows
 
+    def dismiss_popups(self, max_attempts=20):
+        """执行命令前逐个用 Esc 关闭本客户端的残留提示窗口。"""
+        if self.app is None or self.main_window is None:
+            # 客户端未运行时无需清理，后续命令仍按各自流程处理。
+            if not self.bind_client(timeout=2, log_failure=False):
+                return 0
+
+        escape_count = 0
+        for attempt in range(max_attempts + 1):
+            popup = None
+            for window in self._popup_windows():
+                try:
+                    # 多层模态窗口中只有最上层可操作，每次按键后重新枚举。
+                    if window.is_visible() and window.is_enabled():
+                        popup = window
+                        break
+                except Exception:
+                    # 窗口可能在枚举后自行消失。
+                    continue
+
+            if popup is None and self.main_window.is_enabled():
+                if escape_count:
+                    logging.info("残留提示窗口清理完成，共发送 %s 次 Esc", escape_count)
+                return escape_count
+
+            if attempt == max_attempts:
+                break
+
+            if popup is not None:
+                try:
+                    popup.set_focus()
+                    hot_key(["esc"])
+                    escape_count += 1
+                    logging.info("向残留提示窗口发送 Esc: handle=%s", popup.handle)
+                except Exception:
+                    logging.debug("关闭残留提示窗口失败，将重新检查", exc_info=True)
+            time.sleep(0.2)
+
+        raise RuntimeError(
+            f"尝试 {max_attempts} 次后仍有残留提示窗口或主窗口不可操作，已停止执行命令"
+        )
+
     def _window_static_texts(self, window):
         texts = []
         try:
@@ -913,11 +955,13 @@ class ThsAuto:
             logging.info("开始绑定客户端窗口: title=%s timeout=%s", window_title, timeout)
             self.app = Application(backend="win32").connect(title=window_title, timeout=timeout)
             main_window = self.app.window(title=window_title)
-            main_window.wait("exists ready", timeout=timeout)
+            # 残留模态提示框可能禁用主窗口，先完成绑定以便清理提示框。
+            main_window.wait("exists", timeout=timeout)
             self.main_window = main_window.wrapper_object()
             self.hwnd_main = self.main_window.handle
             logging.info("客户端绑定成功: hwnd=%s", self.hwnd_main)
-            self.active_main_window()
+            if self.main_window.is_enabled():
+                self.active_main_window()
             return True
         except Exception:
             if log_failure:

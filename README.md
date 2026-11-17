@@ -83,6 +83,7 @@ python server.py [IP地址] [端口] [同花顺客户端路径]
 
 - IP 地址默认 `127.0.0.1`，端口默认 `5000`；需要被其他机器访问时，IP 写 `0.0.0.0` 或本机局域网地址
 - 提供客户端路径时，如果启动时客户端未运行，会自动拉起并等待最多 30 秒完成绑定；`/thsauto/client/restart` 接口也依赖该路径
+- 所有接口在执行命令前，会在串行锁内检查并逐个向残留提示窗口发送 Esc（包括拷贝数据验证码提示框）。最多检查清理 20 轮；如果仍有提示框或主窗口不可操作，接口返回失败并停止执行本次命令。命令执行过程中产生的验证码仍按正常 OCR 流程处理
 
 示例：
 
@@ -188,6 +189,7 @@ python server.py 0.0.0.0 5000 C:\Users\match\Desktop\THS\xiadan.exe
 ## 测试
 
 - `test_llm_ocr.py`：OCR 模块单元测试，不依赖客户端，运行 `python -m unittest test_llm_ocr`
+- `test_thsauto_popups.py`：命令前弹窗清理测试，模拟窗口和接口，不依赖 Windows 或客户端，运行 `python -m unittest test_thsauto_popups`
 - `test.py`：手动调试脚本，需要客户端已运行
 
 ## 注意事项

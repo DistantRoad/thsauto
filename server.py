@@ -86,6 +86,7 @@ def interval_call(func):
             dict(request.args),
         )
         try:
+            auto.dismiss_popups()
             rt = func(*args, **kwargs)
         except Exception as e:
             logging.exception("HTTP请求异常: path=%s", request.path)
