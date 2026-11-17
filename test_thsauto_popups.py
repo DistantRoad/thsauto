@@ -42,6 +42,8 @@ class PopupCleanupTests(unittest.TestCase):
         popup = mock.Mock(handle=handle)
         popup.is_visible.return_value = True
         popup.is_enabled.return_value = True
+        popup.style.return_value = 0x00C00000
+        popup.exstyle.return_value = 0
         return popup
 
     def test_no_popup_does_not_send_escape(self):
@@ -49,11 +51,33 @@ class PopupCleanupTests(unittest.TestCase):
         self.hot_key.assert_not_called()
         self.sleep.assert_not_called()
 
+    def test_persistent_tool_window_does_not_block_command(self):
+        tool = self.popup(2)
+        # 来自实际客户端的常驻辅助窗口样式：#32770、无标题栏、工具窗口。
+        tool.style.return_value = 0x940B0044
+        tool.exstyle.return_value = 0x10088
+        self.auto._popup_windows.return_value = [tool]
+
+        self.assertEqual(0, self.auto.dismiss_popups())
+        self.hot_key.assert_not_called()
+        tool.set_focus.assert_not_called()
+
+    def test_tool_dialog_with_caption_is_still_closed(self):
+        popup = self.popup(2)
+        popup.exstyle.return_value = 0x80
+        self.auto._popup_windows.side_effect = [[popup], []]
+
+        self.assertEqual(1, self.auto.dismiss_popups())
+        self.hot_key.assert_called_once_with(["esc"])
+
     def test_nested_popups_close_from_top_to_bottom(self):
+        tool = self.popup(5)
+        tool.style.return_value = 0x940B0044
+        tool.exstyle.return_value = 0x10088
         stack = [self.popup(2), self.popup(3), self.popup(4)]
         for popup in stack:
             popup.is_enabled.side_effect = lambda window=popup: bool(stack) and stack[-1] is window
-        self.auto._popup_windows.side_effect = lambda: list(stack)
+        self.auto._popup_windows.side_effect = lambda: [tool] + list(stack)
         self.auto.main_window.is_enabled.side_effect = lambda: not stack
         closed_handles = []
 

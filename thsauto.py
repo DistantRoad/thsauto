@@ -74,6 +74,8 @@ COMMON_GRID_CONTROL_ID = 0x417
 TREE_CONTROL_ID = 129
 CAPTCHA_EDITOR_CONTROL_ID = 0x964
 CAPTCHA_IMAGE_CONTROL_ID = 0x965
+WS_CAPTION = 0x00C00000
+WS_EX_TOOLWINDOW = 0x00000080
 WM_GETTEXT = 0x000D
 WM_GETTEXTLENGTH = 0x000E
 WM_SETTEXT = 0x000C
@@ -359,6 +361,10 @@ class ThsAuto:
                 try:
                     # 多层模态窗口中只有最上层可操作，每次按键后重新枚举。
                     if window.is_visible() and window.is_enabled():
+                        # 同花顺有常驻的无标题栏工具窗口（也使用 #32770 类），
+                        # 不是提示框，不会响应 Esc，不能仅凭可见性判断。
+                        if window.exstyle() & WS_EX_TOOLWINDOW and not window.style() & WS_CAPTION:
+                            continue
                         popup = window
                         break
                 except Exception:
