@@ -202,6 +202,59 @@ def restart_client():
     return jsonify({'code': 1, 'status': 'failed', 'message': f'Client failed to start within {max_wait_time} seconds'}), 200
 
 
+def _parse_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+@app.route('/thsauto/ai', methods = ['GET', 'POST'])
+@interval_call
+def ai_task():
+    payload = {}
+    if request.method == 'POST':
+        payload = request.get_json(silent=True) or {}
+        if not payload and request.form:
+            payload = dict(request.form)
+
+    def _param(name, default=None):
+        if name in payload and payload[name] is not None:
+            return payload[name]
+        return request.args.get(name, default)
+
+    prompt = _param('prompt') or _param('task') or _param('query')
+    max_steps = _param('max_steps', 12)
+    api_url = _param('api_url') or _param('base_url')
+    api_key = _param('api_key')
+    model = _param('model')
+    proxy = _param('proxy')
+    timeout = _param('timeout')
+    temperature = _param('temperature', 0.1)
+    max_tokens = _param('max_tokens', 1500)
+    system_prompt = _param('system_prompt')
+    extra_body = payload.get('extra_body') if isinstance(payload, dict) else None
+    include_screenshot = _parse_bool(_param('include_screenshot'), default=False)
+
+    auto.active_main_window()
+    result = auto.run_ai_task(
+        prompt=prompt,
+        max_steps=int(max_steps) if max_steps is not None else 12,
+        api_url=api_url,
+        api_key=api_key,
+        model=model,
+        proxy=proxy,
+        timeout=float(timeout) if timeout is not None else None,
+        temperature=float(temperature) if temperature is not None else 0.1,
+        max_tokens=int(max_tokens) if max_tokens is not None else 1500,
+        system_prompt=system_prompt,
+        extra_body=extra_body,
+        include_screenshot=include_screenshot,
+    )
+    return jsonify(result), 200
+
+
 @app.route('/thsauto/test', methods = ['GET'])
 @interval_call
 def test():

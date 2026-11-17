@@ -8,6 +8,7 @@ thsauto 是一个基于 Python 的同花顺自动下单工具：通过 pywinauto
 - **交易操作**：支持普通股票和科创板的买入、卖出，成功时返回合同编号
 - **订单管理**：查询未成交、已成交订单，按合同编号撤单
 - **客户端管理**：服务启动时自动拉起客户端，支持通过接口关闭、重启客户端
+- **AI 通用操作入口**：通过视觉（主窗口截图）+ Win32 控件树混合 Agent 循环，不受限制地操作同花顺客户端的任意功能（新股/可转债申购、国债逆回购、银证转账、条件单、历史流水查询、弹窗处理等），支持每次请求手动指定大模型参数
 - **验证码自动识别**：截取验证码图片（内存中处理，不落盘），调用兼容 OpenAI 接口的大模型识别，失败自动刷新重试，最多 10 次
 - **顺序执行**：全局线程锁保证同一时间只执行一个操作，相邻两次操作至少间隔 0.5 秒
 - **窗口自愈**：主窗口过小（如宿主机重启后客户端以很小的窗口启动）时自动放大，避免切页失败
@@ -172,6 +173,52 @@ python server.py 0.0.0.0 5000 C:\Users\match\Desktop\THS\xiadan.exe
 |---|---|
 | `/thsauto/client/kill` | 关闭同花顺客户端 |
 | `/thsauto/client/restart` | 重启同花顺客户端，最多等待 30 秒完成绑定 |
+
+#### AI 通用操作入口
+
+| 接口 | 方法 | 说明 |
+|---|---|---|
+| `/thsauto/ai` | `POST` / `GET` | 使用 AI Agent（截图 + Win32 控件树多步循环）操作同花顺客户端完成任意指令 |
+
+POST JSON 请求示例（所有大模型参数均可每次手动指定，省略时自动回退到环境变量或 `ocr_config.json`）：
+
+```json
+{
+  "prompt": "切换到国债逆回购页面，查询当前1天期国债逆回购代码和年化利率",
+  "max_steps": 12,
+  "api_url": "https://new-api.distantroad.win/v1/chat/completions",
+  "api_key": "sk-...",
+  "model": "gemini-3.5-flash-lite",
+  "proxy": "socks5://user:pass@127.0.0.1:1080",
+  "timeout": 60,
+  "temperature": 0.1,
+  "max_tokens": 1500,
+  "system_prompt": "可选的附加系统提示词",
+  "extra_body": {},
+  "include_screenshot": false
+}
+```
+
+返回示例：
+
+```json
+{
+  "code": 0,
+  "status": "succeed",
+  "msg": "查询完成",
+  "data": {},
+  "steps": [
+    {
+      "step": 1,
+      "thought": "...",
+      "action": "select_tree_item",
+      "params": {"text": "国债逆回购"},
+      "status": "ok",
+      "observation": {}
+    }
+  ]
+}
+```
 
 ## 技术实现
 

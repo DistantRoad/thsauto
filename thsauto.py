@@ -1,13 +1,17 @@
 import ctypes
+import json
 import logging
 import os
+import re
 import subprocess
 import time
+from base64 import b64encode
 from decimal import Decimal
+from io import BytesIO
 from logging.handlers import RotatingFileHandler
 from typing import Iterable
 
-from pywinauto import Application, clipboard, keyboard
+from pywinauto import Application, clipboard, keyboard, mouse
 from PIL import ImageGrab
 
 from const import BALANCE_CONTROL_ID_GROUP
@@ -86,18 +90,81 @@ EM_REPLACESEL = 0x00C2
 
 _SEND_KEYS_TOKEN_MAP = {
     "enter": "{ENTER}",
+    "return": "{ENTER}",
     "esc": "{ESC}",
+    "escape": "{ESC}",
     "tab": "{TAB}",
+    "space": "{SPACE}",
+    "delete": "{DELETE}",
+    "del": "{DELETE}",
     "backspace": "{BACKSPACE}",
+    "down": "{DOWN}",
+    "up": "{UP}",
+    "left": "{LEFT}",
+    "right": "{RIGHT}",
     "down_arrow": "{DOWN}",
     "up_arrow": "{UP}",
     "left_arrow": "{LEFT}",
     "right_arrow": "{RIGHT}",
     "page_up": "{PGUP}",
     "page_down": "{PGDN}",
+    "pgup": "{PGUP}",
+    "pgdn": "{PGDN}",
     "home": "{HOME}",
     "end": "{END}",
 }
+
+AI_AGENT_SYSTEM_PROMPT = """你是同花顺Windows股票交易客户端（网上股票交易系统5.0）的GUI自动化智能体。
+你的目标是完全按照用户的指令操作同花顺客户端，不受限制地执行任何功能（如查询各类报表、银证转账、国债逆回购、新股/可转债申购、条件单、融资融券、科创板/北交所交易、修改设置、处理弹窗等）并返回准确结果。
+
+每一轮你将收到：
+1. 当前同花顺主窗口截图（若存在弹窗也会体现在画面与状态文本中）。
+2. 当前窗口的精确坐标与Win32控件树摘要（包括主窗口区域、弹窗列表、左侧菜单树SysTreeView32节点、可见按钮/输入框/标签/表格CVirtualGridCtrl及其handle、control_id、相对主窗口坐标rel_rect与中心点center）。
+3. 已执行的步骤历史与上一步动作的返回数据（例如复制出的表格内容等）。
+
+【坐标系说明】
+- 默认所有点击坐标 (x, y) 均为相对主窗口左上角的像素坐标（即截图内的像素坐标，范围 0 <= x <= width, 0 <= y <= height）。
+- 如需使用屏幕绝对坐标，可在动作参数中设置 "coord_type": "screen"。
+- 如果目标控件在控件列表中有 handle，优先指定 handle 操作（如 click / input_text / copy_grid），比纯坐标更精准。
+
+【可用动作（每次只能输出一个 JSON 对象）】
+1. click: 单击
+   {"thought": "...", "action": "click", "params": {"x": 120, "y": 85, "handle": 可选整数句柄, "button": "left"}}
+2. double_click: 双击（常用于左侧树节点展开/进入、表格行撤单或触发详情）
+   {"thought": "...", "action": "double_click", "params": {"x": 120, "y": 85, "handle": 可选整数句柄}}
+3. right_click: 右键单击
+   {"thought": "...", "action": "right_click", "params": {"x": 120, "y": 85, "handle": 可选整数句柄}}
+4. select_tree_item: 直接选择或点击左侧功能菜单树（SysTreeView32）中的节点
+   {"thought": "...", "action": "select_tree_item", "params": {"path": "新股申购\\新股申购"}} 或 {"text": "国债逆回购"}
+5. input_text: 在输入框中填写文本（支持通过 handle、control_id 或 x,y 定位输入框）
+   {"thought": "...", "action": "input_text", "params": {"handle": 12345, "control_id": 可选, "x": 可选, "y": 可选, "text": "600000", "clear": true, "press_enter": false}}
+6. hot_key: 发送键盘按键或组合键（例如 ["F1"]、["F5"]、["enter"]、["esc"]、["ctrl", "c"]、["y"]）
+   {"thought": "...", "action": "hot_key", "params": {"keys": ["F5"]}}
+7. copy_grid: 复制当前页面表格（CVirtualGridCtrl）的全部内容并返回结构化JSON（自动处理同花顺复制验证码）
+   {"thought": "...", "action": "copy_grid", "params": {"handle": 可选表格句柄, "control_id": 可选默认1047}}
+8. get_control_text: 读取指定控件或弹窗的文本
+   {"thought": "...", "action": "get_control_text", "params": {"handle": 可选, "control_id": 可选}}
+9. scroll: 鼠标滚轮滚动
+   {"thought": "...", "action": "scroll", "params": {"x": 300, "y": 300, "wheel_dist": -3}}
+10. wait: 等待界面加载
+    {"thought": "...", "action": "wait", "params": {"seconds": 1.0}}
+11. switch_tab: 切换左下角大类标签（"normal" 普通交易 或 "kechuang" 科创板）
+    {"thought": "...", "action": "switch_tab", "params": {"tab": "normal"}}
+12. 内置快捷动作（当用户需求恰好包含这些基础操作时可直接调用）:
+    - {"thought": "...", "action": "get_balance", "params": {}}
+    - {"thought": "...", "action": "get_position", "params": {}}
+    - {"thought": "...", "action": "get_active_orders", "params": {}}
+    - {"thought": "...", "action": "get_filled_orders", "params": {}}
+    - {"thought": "...", "action": "buy", "params": {"stock_no": "600000", "amount": 100, "price": 10.5}}
+    - {"thought": "...", "action": "sell", "params": {"stock_no": "600000", "amount": 100, "price": 10.5}}
+    - {"thought": "...", "action": "cancel", "params": {"entrust_no": "..."}}
+13. finish: 任务已完成，返回最终结果
+    {"thought": "...", "action": "finish", "result": <任意结构化数据或字典/列表/字符串>, "message": "简明总结"}
+14. fail: 任务无法完成（例如客户端报错弹窗提示余额不足、休市、找不到对应菜单等）
+    {"thought": "...", "action": "fail", "message": "失败原因说明", "result": <可选附加信息>}
+
+【输出格式要求】
+必须且只能输出一个合法的 JSON 对象，不要包含任何其他解释文字。"""
 
 _SEND_KEYS_MODIFIER_MAP = {
     "ctrl": "^",
@@ -876,7 +943,7 @@ class ThsAuto:
             return False
         return False
 
-    def _wait_clipboard_table(self, control, copy_each_retry=False):
+    def _wait_clipboard_table(self, control, copy_each_retry=False, ocr_kwargs=None):
         data = None
         retry = 0
         while not data and retry < retry_time:
@@ -888,7 +955,7 @@ class ThsAuto:
                 getattr(control, "handle", "unknown"),
             )
             if retry == 0 or copy_each_retry:
-                self.copy_table(control)
+                self.copy_table(control, ocr_kwargs=ocr_kwargs)
             retry += 1
             time.sleep(sleep_time)
             data = get_clipboard_data()
@@ -1332,7 +1399,7 @@ class ThsAuto:
         tree.click_input(coords=(10, 30))
         time.sleep(sleep_time)
 
-    def copy_table(self, hwnd):
+    def copy_table(self, hwnd, ocr_kwargs=None):
         control = _resolve_wrapper(hwnd)
         logging.info("开始复制表格: handle=%s class=%s", getattr(control, "handle", "unknown"), control.class_name())
         self.active_main_window()
@@ -1341,9 +1408,9 @@ class ThsAuto:
         control.set_focus()
         control.type_keys("^A^C", set_foreground=False, pause=sleep_time)
         logging.info("表格复制按键已发送，开始处理验证码")
-        self.input_ocr()
+        self.input_ocr(**(ocr_kwargs or {}))
 
-    def input_ocr(self):
+    def input_ocr(self, **llm_kwargs):
         retry = 0
         while retry < 10:
             logging.info("验证码处理开始: attempt=%d/10", retry + 1)
@@ -1379,7 +1446,7 @@ class ThsAuto:
                 time.sleep(sleep_time)
                 continue
             try:
-                code = (llm_ocr.ocr_image(captcha_image) or "").strip()
+                code = (llm_ocr.ocr_image(captcha_image, **llm_kwargs) or "").strip()
             except Exception as exc:
                 logging.exception("验证码OCR调用失败: attempt=%d", retry + 1)
                 retry += 1
@@ -1483,6 +1550,597 @@ class ThsAuto:
         except Exception:
             logging.exception("回退控件截图失败: handle=%s", getattr(control, "handle", "unknown"))
             return None
+
+    @staticmethod
+    def _encode_image_base64(image) -> str:
+        with BytesIO() as buffer:
+            image.save(buffer, format="PNG")
+            return b64encode(buffer.getvalue()).decode("utf-8")
+
+    @staticmethod
+    def _extract_json_dict(raw_text: str) -> dict:
+        if not raw_text:
+            raise ValueError("AI返回内容为空")
+        text = raw_text.strip()
+        fence_pattern = r"`{3}(?:json)?\s*(\{.*?\})\s*`{3}"
+        fenced = re.search(fence_pattern, text, re.DOTALL)
+        if fenced:
+            text = fenced.group(1).strip()
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            parsed = json.loads(text[start : end + 1])
+            if isinstance(parsed, dict):
+                return parsed
+        raise ValueError(f"无法从AI响应中解析JSON对象: {raw_text!r}")
+
+    def _get_tree_snapshot(self, max_items=80):
+        items = []
+        try:
+            tree = self.get_tree_hwnd()
+            tree_rect = tree.rectangle()
+            main_rect = self.main_window.rectangle()
+            try:
+                roots = tree.roots()
+            except Exception:
+                roots = []
+
+            def _walk(node, prefix=""):
+                if len(items) >= max_items:
+                    return
+                try:
+                    label = (node.text() or "").strip()
+                except Exception:
+                    label = ""
+                path = f"{prefix}\\{label}" if prefix else label
+                entry = {"path": path, "text": label}
+                try:
+                    client_rect = node.client_rect()
+                    if client_rect.width() > 0 and client_rect.height() > 0:
+                        rel_x = (tree_rect.left - main_rect.left) + (client_rect.left + client_rect.right) // 2
+                        rel_y = (tree_rect.top - main_rect.top) + (client_rect.top + client_rect.bottom) // 2
+                        entry["center"] = [int(rel_x), int(rel_y)]
+                except Exception:
+                    pass
+                if label:
+                    items.append(entry)
+                try:
+                    children = node.sub_elements()
+                except Exception:
+                    children = []
+                for child in children:
+                    if len(items) >= max_items:
+                        break
+                    _walk(child, path)
+
+            for root in roots:
+                _walk(root)
+        except Exception:
+            logging.debug("提取左侧菜单树快照失败", exc_info=True)
+        return items
+
+    def collect_ui_state(self, max_controls=120):
+        """收集当前同花顺主窗口、弹窗及主要控件的布局与文本状态，供AI决策。"""
+        self._ensure_bound()
+        main_rect = self.main_window.rectangle()
+        main_left, main_top = main_rect.left, main_rect.top
+        main_width, main_height = main_rect.width(), main_rect.height()
+
+        popups_info = []
+        for popup in self._popup_windows():
+            try:
+                p_rect = popup.rectangle()
+                children_info = []
+                for child in self._dialog_children(popup):
+                    c_rect = child.rectangle()
+                    rel_left = c_rect.left - main_left
+                    rel_top = c_rect.top - main_top
+                    rel_right = c_rect.right - main_left
+                    rel_bottom = c_rect.bottom - main_top
+                    children_info.append(
+                        {
+                            "handle": getattr(child, "handle", None),
+                            "class": _class_name(child),
+                            "control_id": _control_id(child),
+                            "text": get_text(child).strip(),
+                            "rel_rect": [rel_left, rel_top, rel_right, rel_bottom],
+                            "center": [(rel_left + rel_right) // 2, (rel_top + rel_bottom) // 2],
+                            "screen_center": [
+                                (c_rect.left + c_rect.right) // 2,
+                                (c_rect.top + c_rect.bottom) // 2,
+                            ],
+                        }
+                    )
+                popups_info.append(
+                    {
+                        "handle": getattr(popup, "handle", None),
+                        "title": get_text(popup).strip(),
+                        "class": _class_name(popup),
+                        "rel_rect": [
+                            p_rect.left - main_left,
+                            p_rect.top - main_top,
+                            p_rect.right - main_left,
+                            p_rect.bottom - main_top,
+                        ],
+                        "static_texts": self._window_static_texts(popup),
+                        "button_texts": self._window_button_texts(popup),
+                        "controls": children_info,
+                    }
+                )
+            except Exception:
+                logging.debug("收集弹窗信息失败", exc_info=True)
+
+        controls_info = []
+        important_classes = {
+            "Edit",
+            "Button",
+            "ComboBox",
+            "CVirtualGridCtrl",
+            "CCustomTabCtrl",
+            "SysTabControl32",
+            "SysListView32",
+            "SysHeader32",
+            "Static",
+        }
+        try:
+            for ctrl in self.main_window.descendants():
+                if len(controls_info) >= max_controls:
+                    break
+                try:
+                    if not ctrl.is_visible():
+                        continue
+                except Exception:
+                    continue
+                cls = _class_name(ctrl)
+                text = get_text(ctrl).strip()
+                if cls == "Edit" and not text:
+                    text = self._editor_value(ctrl)
+                if cls not in important_classes and not text:
+                    continue
+                if cls == "Static" and not text:
+                    continue
+                try:
+                    c_rect = ctrl.rectangle()
+                except Exception:
+                    continue
+                if c_rect.width() <= 1 or c_rect.height() <= 1:
+                    continue
+                rel_left = c_rect.left - main_left
+                rel_top = c_rect.top - main_top
+                rel_right = c_rect.right - main_left
+                rel_bottom = c_rect.bottom - main_top
+                controls_info.append(
+                    {
+                        "handle": getattr(ctrl, "handle", None),
+                        "class": cls,
+                        "control_id": _control_id(ctrl),
+                        "text": text[:120] if text else "",
+                        "rel_rect": [rel_left, rel_top, rel_right, rel_bottom],
+                        "center": [(rel_left + rel_right) // 2, (rel_top + rel_bottom) // 2],
+                    }
+                )
+        except Exception:
+            logging.debug("收集主窗口控件列表失败", exc_info=True)
+
+        return {
+            "main_window": {
+                "handle": self.hwnd_main,
+                "title": get_text(self.main_window),
+                "screen_rect": [main_rect.left, main_rect.top, main_rect.right, main_rect.bottom],
+                "size": [main_width, main_height],
+            },
+            "popups": popups_info,
+            "tree_items": self._get_tree_snapshot(),
+            "controls": controls_info,
+        }
+
+    def _resolve_ai_target_control(self, params: dict, expected_class=None):
+        handle = params.get("handle")
+        if handle is not None:
+            try:
+                return self.app.window(handle=int(handle)).wrapper_object()
+            except Exception:
+                pass
+        control_id = params.get("control_id")
+        if control_id is not None:
+            if isinstance(control_id, str):
+                control_id = int(control_id, 16) if control_id.lower().startswith("0x") else int(control_id)
+            else:
+                control_id = int(control_id)
+            for popup in self._popup_windows():
+                try:
+                    kwargs = {"control_id": control_id, "timeout": 0.5}
+                    if expected_class:
+                        kwargs["class_name"] = expected_class
+                    return self._child_window(popup, **kwargs)
+                except Exception:
+                    continue
+            return self._get_right_control(control_id, class_name=expected_class, timeout=1.5)
+        return None
+
+    def _resolve_screen_coords(self, x: int, y: int, coord_type: str = "window"):
+        self._ensure_bound()
+        if str(coord_type).lower() == "screen":
+            return int(x), int(y)
+        rect = self.main_window.rectangle()
+        return int(rect.left + int(x)), int(rect.top + int(y))
+
+    def _execute_ai_action(self, action_obj: dict, ocr_kwargs: dict = None):
+        action = str(action_obj.get("action") or "").strip()
+        params = action_obj.get("params") or {}
+        if not isinstance(params, dict):
+            params = {}
+
+        logging.info("AI执行动作: action=%s params=%s", action, params)
+
+        if self.get_ocr_hwnd() is not None and action not in ("finish", "fail"):
+            logging.info("检测到未关闭的验证码弹窗，自动执行验证码识别")
+            self.input_ocr(**(ocr_kwargs or {}))
+
+        if action in ("click", "double_click", "right_click"):
+            button = "right" if action == "right_click" else str(params.get("button") or "left")
+            ctrl = self._resolve_ai_target_control(params)
+            if ctrl is not None and ("x" not in params or "y" not in params):
+                if action == "double_click":
+                    ctrl.double_click_input(button=button)
+                else:
+                    ctrl.click_input(button=button)
+                time.sleep(sleep_time * 2)
+                return {"clicked_handle": getattr(ctrl, "handle", None), "action": action}
+
+            if "x" not in params or "y" not in params:
+                raise ValueError(f"{action} 需要提供 (x, y) 坐标或有效的 handle/control_id")
+            screen_x, screen_y = self._resolve_screen_coords(
+                params["x"], params["y"], params.get("coord_type", "window")
+            )
+            if action == "double_click":
+                mouse.double_click(button=button, coords=(screen_x, screen_y))
+            else:
+                mouse.click(button=button, coords=(screen_x, screen_y))
+            time.sleep(sleep_time * 2)
+            return {"screen_coords": [screen_x, screen_y], "action": action}
+
+        if action == "select_tree_item":
+            tree = self.get_tree_hwnd()
+            path = params.get("path")
+            text_target = params.get("text")
+            if path:
+                norm_path = str(path).replace("/", "\\")
+                if not norm_path.startswith("\\"):
+                    norm_path = "\\" + norm_path
+                try:
+                    item = tree.get_item(norm_path)
+                    item.click_input(double=bool(params.get("double", True)))
+                    time.sleep(refresh_sleep_time)
+                    return {"selected_path": norm_path}
+                except Exception:
+                    logging.info("通过路径选择树节点未命中，尝试按名称搜索: path=%s", norm_path)
+                    text_target = text_target or norm_path.split("\\")[-1]
+            if text_target:
+                snapshot = self._get_tree_snapshot(max_items=120)
+                for entry in snapshot:
+                    if entry.get("text") == text_target or text_target in entry.get("path", ""):
+                        if "center" in entry:
+                            sx, sy = self._resolve_screen_coords(
+                                entry["center"][0], entry["center"][1], "window"
+                            )
+                            mouse.double_click(coords=(sx, sy))
+                            time.sleep(refresh_sleep_time)
+                            return {"selected_item": entry}
+                raise RuntimeError(f"未在左侧菜单树中找到节点: {text_target!r}")
+            raise ValueError("select_tree_item 需要提供 path 或 text 参数")
+
+        if action == "input_text":
+            text_val = "" if params.get("text") is None else str(params.get("text"))
+            clear_first = bool(params.get("clear", True))
+            press_enter = bool(params.get("press_enter", False))
+            ctrl = self._resolve_ai_target_control(params, expected_class="Edit") or self._resolve_ai_target_control(params)
+            if ctrl is not None:
+                if clear_first:
+                    self._clear_editor_by_backspace(
+                        ctrl, context="AI输入框", steps=max(12, len(text_val) + 4)
+                    )
+                self._paste_editor_text(ctrl, text_val, context="AI输入框")
+                actual = self._editor_value(ctrl)
+                if press_enter:
+                    hot_key(["enter"])
+                return {
+                    "handle": getattr(ctrl, "handle", None),
+                    "expected": text_val,
+                    "actual": actual,
+                }
+            if "x" in params and "y" in params:
+                sx, sy = self._resolve_screen_coords(
+                    params["x"], params["y"], params.get("coord_type", "window")
+                )
+                mouse.click(coords=(sx, sy))
+                time.sleep(sleep_time)
+                if clear_first:
+                    keyboard.send_keys("^a{BACKSPACE}", pause=sleep_time, vk_packet=False)
+                if text_val:
+                    self._set_clipboard_text(text_val)
+                    keyboard.send_keys("^v", pause=sleep_time, vk_packet=False)
+                if press_enter:
+                    hot_key(["enter"])
+                return {"screen_coords": [sx, sy], "input": text_val}
+            raise ValueError("input_text 需要提供 handle、control_id 或 (x, y) 坐标")
+
+        if action == "hot_key":
+            keys = params.get("keys")
+            if isinstance(keys, str):
+                keys = [keys]
+            if not keys or not isinstance(keys, list):
+                raise ValueError("hot_key 需要提供 keys 列表，例如 ['F5'] 或 ['enter']")
+            hot_key(keys)
+            time.sleep(sleep_time * 2)
+            return {"keys": keys}
+
+        if action == "copy_grid":
+            ctrl = self._resolve_ai_target_control(params, expected_class="CVirtualGridCtrl")
+            if ctrl is None:
+                ctrl = self._get_right_control(
+                    COMMON_GRID_CONTROL_ID, class_name="CVirtualGridCtrl", timeout=2.0
+                )
+            raw_data = self._wait_clipboard_table(
+                ctrl, copy_each_retry=True, ocr_kwargs=ocr_kwargs
+            )
+            parsed = parse_table(raw_data) if raw_data else []
+            return {
+                "handle": getattr(ctrl, "handle", None),
+                "rows_count": len(parsed),
+                "rows": parsed,
+                "raw_preview": (raw_data or "")[:500],
+            }
+
+        if action == "get_control_text":
+            ctrl = self._resolve_ai_target_control(params)
+            if ctrl is None:
+                raise ValueError("get_control_text 未找到目标控件")
+            return {
+                "handle": getattr(ctrl, "handle", None),
+                "text": get_text(ctrl),
+                "edit_value": self._editor_value(ctrl),
+            }
+
+        if action == "scroll":
+            sx, sy = self._resolve_screen_coords(
+                params.get("x", 400),
+                params.get("y", 350),
+                params.get("coord_type", "window"),
+            )
+            wheel_dist = int(params.get("wheel_dist", -3))
+            mouse.scroll(coords=(sx, sy), wheel_dist=wheel_dist)
+            time.sleep(sleep_time * 2)
+            return {"screen_coords": [sx, sy], "wheel_dist": wheel_dist}
+
+        if action == "wait":
+            seconds = min(10.0, max(0.05, float(params.get("seconds", 0.5))))
+            time.sleep(seconds)
+            return {"waited": seconds}
+
+        if action == "switch_tab":
+            tab = str(params.get("tab") or "normal").lower()
+            if tab in ("kechuang", "kc", "科创板"):
+                self.switch_to_kechuang()
+            else:
+                self.switch_to_normal()
+            return {"tab": tab}
+
+        if action == "get_balance":
+            return self.get_balance()
+        if action == "get_position":
+            return self.get_position()
+        if action == "get_active_orders":
+            return self.get_active_orders()
+        if action == "get_filled_orders":
+            return self.get_filled_orders()
+        if action == "buy":
+            price = params.get("price")
+            return self.buy(
+                stock_no=str(params["stock_no"]),
+                amount=int(params["amount"]),
+                price=float(price) if price is not None else None,
+            )
+        if action == "sell":
+            price = params.get("price")
+            return self.sell(
+                stock_no=str(params["stock_no"]),
+                amount=int(params["amount"]),
+                price=float(price) if price is not None else None,
+            )
+        if action == "buy_kc":
+            price = params.get("price")
+            return self.buy_kc(
+                stock_no=str(params["stock_no"]),
+                amount=int(params["amount"]),
+                price=float(price) if price is not None else None,
+            )
+        if action == "sell_kc":
+            price = params.get("price")
+            return self.sell_kc(
+                stock_no=str(params["stock_no"]),
+                amount=int(params["amount"]),
+                price=float(price) if price is not None else None,
+            )
+        if action == "cancel":
+            return self.cancel(entrust_no=str(params["entrust_no"]))
+
+        raise ValueError(f"不支持的AI动作类型: {action!r}")
+
+    def run_ai_task(
+        self,
+        prompt: str,
+        max_steps: int = 12,
+        api_url: str = None,
+        api_key: str = None,
+        model: str = None,
+        proxy: str = None,
+        timeout: float = None,
+        temperature: float = 0.1,
+        max_tokens: int = 1500,
+        system_prompt: str = None,
+        extra_body: dict = None,
+        include_screenshot: bool = False,
+    ):
+        """使用视觉+控件混合AI Agent循环操作同花顺客户端，不受限制地执行任意功能。"""
+        if not prompt or not str(prompt).strip():
+            return {"code": 1, "status": "failed", "msg": "prompt 不能为空"}
+
+        max_steps = max(1, min(50, int(max_steps or 12)))
+        self.active_main_window()
+
+        ocr_kwargs = {
+            "api_url": api_url,
+            "api_key": api_key,
+            "model": model,
+            "proxy": proxy,
+            "timeout": timeout,
+        }
+
+        steps_history = []
+        last_screenshot_b64 = None
+        effective_system_prompt = (
+            f"{AI_AGENT_SYSTEM_PROMPT}\n\n【用户附加系统指令】\n{system_prompt}"
+            if system_prompt
+            else AI_AGENT_SYSTEM_PROMPT
+        )
+
+        logging.info(
+            "开始执行AI任务: prompt=%r max_steps=%d model=%s api_url=%s",
+            prompt,
+            max_steps,
+            model or "default",
+            api_url or "default",
+        )
+
+        for step_idx in range(1, max_steps + 1):
+            self._ensure_bound()
+            ui_state = self.collect_ui_state()
+            screenshot = self.capture_window(self.main_window)
+            screenshot_b64 = None
+            if screenshot is not None:
+                try:
+                    screenshot_b64 = self._encode_image_base64(screenshot)
+                    last_screenshot_b64 = screenshot_b64
+                finally:
+                    try:
+                        screenshot.close()
+                    except Exception:
+                        pass
+
+            user_context = {
+                "task": prompt,
+                "current_step": step_idx,
+                "max_steps": max_steps,
+                "history": steps_history[-8:],
+                "ui_state": ui_state,
+            }
+            user_content = [
+                {
+                    "type": "text",
+                    "text": json.dumps(user_context, ensure_ascii=False),
+                }
+            ]
+            if screenshot_b64:
+                user_content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"},
+                    }
+                )
+
+            messages = [
+                {"role": "system", "content": effective_system_prompt},
+                {"role": "user", "content": user_content},
+            ]
+
+            raw_reply = llm_ocr.request_chat_completion(
+                messages=messages,
+                api_url=api_url,
+                api_key=api_key,
+                model=model,
+                proxy=proxy,
+                timeout=timeout,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                extra_body=extra_body,
+            )
+            logging.info("AI第%d步原始响应: %s", step_idx, raw_reply)
+
+            decision = self._extract_json_dict(raw_reply)
+            action = str(decision.get("action") or "").strip()
+            thought = decision.get("thought") or ""
+
+            if action == "finish":
+                response = {
+                    "code": 0,
+                    "status": "succeed",
+                    "msg": decision.get("message") or "AI任务执行完成",
+                    "data": decision.get("result"),
+                    "steps": steps_history
+                    + [
+                        {
+                            "step": step_idx,
+                            "thought": thought,
+                            "action": "finish",
+                        }
+                    ],
+                }
+                if include_screenshot and last_screenshot_b64:
+                    response["screenshot_base64"] = last_screenshot_b64
+                return response
+
+            if action == "fail":
+                response = {
+                    "code": 1,
+                    "status": "failed",
+                    "msg": decision.get("message") or "AI判定任务无法完成",
+                    "data": decision.get("result"),
+                    "steps": steps_history
+                    + [
+                        {
+                            "step": step_idx,
+                            "thought": thought,
+                            "action": "fail",
+                        }
+                    ],
+                }
+                if include_screenshot and last_screenshot_b64:
+                    response["screenshot_base64"] = last_screenshot_b64
+                return response
+
+            step_record = {
+                "step": step_idx,
+                "thought": thought,
+                "action": action,
+                "params": decision.get("params") or {},
+            }
+            try:
+                observation = self._execute_ai_action(decision, ocr_kwargs=ocr_kwargs)
+                step_record["status"] = "ok"
+                step_record["observation"] = observation
+            except Exception as exc:
+                logging.exception("AI第%d步动作执行异常: action=%s", step_idx, action)
+                step_record["status"] = "error"
+                step_record["error"] = str(exc)
+
+            steps_history.append(step_record)
+
+        response = {
+            "code": 1,
+            "status": "failed",
+            "msg": f"已达到最大步骤数({max_steps})，任务仍未结束",
+            "steps": steps_history,
+        }
+        if include_screenshot and last_screenshot_b64:
+            response["screenshot_base64"] = last_screenshot_b64
+        return response
 
     def test(self):
         pass

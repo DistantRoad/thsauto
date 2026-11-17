@@ -20,6 +20,7 @@ PROMPT_TEXT = (
     " Return the characters only, with no spaces or extra text."
 )
 REQUEST_TIMEOUT = float(os.getenv("THSAUTO_OCR_TIMEOUT", "15"))
+AI_REQUEST_TIMEOUT = float(os.getenv("THSAUTO_AI_TIMEOUT", "60"))
 # API Key、代理账号密码等敏感配置不能写在代码里（本仓库公开）。
 # 优先读环境变量，其次读本机配置文件；配置文件默认为 %USERPROFILE%\thsauto\ocr_config.json，
 # 可用环境变量 THSAUTO_OCR_CONFIG 指定路径，内容示例：
@@ -191,6 +192,20 @@ def _create_socks5_connection(host: str, port: int, timeout: float, proxy_url: s
         raise
 
 
+class SocksHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, proxy_url=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.proxy_url = proxy_url
+
+    def connect(self):
+        self.sock = _create_socks5_connection(
+            host=self.host,
+            port=self.port,
+            timeout=self.timeout,
+            proxy_url=self.proxy_url,
+        )
+
+
 class SocksHTTPSConnection(http.client.HTTPSConnection):
     def __init__(self, *args, proxy_url=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -206,21 +221,232 @@ class SocksHTTPSConnection(http.client.HTTPSConnection):
         self.sock = self._context.wrap_socket(raw_sock, server_hostname=self.host)
 
 
-def _request_ocr(image_bytes: bytes, media_type: str, image_source: str) -> str:
-    api_key, proxy_url = _get_ocr_settings()
+def _parse_api_endpoint(api_url: str):
+    raw = (api_url or API_URL).strip()
+    if "://" not in raw:
+        raw = "https://" + raw
+    parsed = urlparse(raw)
+    scheme = (parsed.scheme or "https").lower()
+    host = parsed.hostname or API_URL
+    port = parsed.port or (80 if scheme == "http" else 443)
+    path = (parsed.path or "").rstrip("/")
+    if not path:
+        request_path = "/v1/chat/completions"
+    elif path.endswith("/chat/completions"):
+        request_path = path
+    elif path.endswith("/v1"):
+        request_path = f"{path}/chat/completions"
+    else:
+        request_path = f"{path}/v1/chat/completions"
+    if parsed.query:
+        request_path = f"{request_path}?{parsed.query}"
+    return scheme, host, port, request_path
+
+
+def resolve_llm_settings(
+    api_url=None,
+    api_key=None,
+    model=None,
+    proxy=None,
+    timeout=None,
+    default_timeout=None,
+):
+    """合并请求级参数、环境变量与本机配置文件，支持每次请求手动覆盖。"""
+    config = _load_local_config()
+    resolved_api_url = (
+        str(api_url).strip()
+        if api_url is not None and str(api_url).strip()
+        else (
+            _get_setting("THSAUTO_AI_API_URL", "api_url", config)
+            or _get_setting("THSAUTO_OCR_API_URL", "api_url", config)
+            or API_URL
+        )
+    )
+    resolved_api_key = (
+        str(api_key).strip()
+        if api_key is not None and str(api_key).strip()
+        else (
+            _get_setting("THSAUTO_AI_API_KEY", "ai_api_key", config)
+            or _get_setting("THSAUTO_OCR_API_KEY", "api_key", config)
+        )
+    )
+    if not resolved_api_key:
+        raise RuntimeError(
+            "未配置API Key：请在请求参数中传入 api_key，设置环境变量 THSAUTO_OCR_API_KEY，"
+            f"或在 {OCR_CONFIG_PATH} 中配置 api_key"
+        )
+
+    resolved_model = (
+        str(model).strip()
+        if model is not None and str(model).strip()
+        else (
+            _get_setting("THSAUTO_AI_MODEL", "ai_model", config)
+            or _get_setting("THSAUTO_OCR_MODEL", "model", config)
+            or MODEL_NAME
+        )
+    )
+
+    if proxy is not None:
+        resolved_proxy = str(proxy).strip()
+    elif os.getenv("THSAUTO_AI_PROXY") is not None:
+        resolved_proxy = os.getenv("THSAUTO_AI_PROXY", "").strip()
+    else:
+        resolved_proxy = _get_setting("THSAUTO_OCR_PROXY", "proxy", config)
+
+    fallback_timeout = AI_REQUEST_TIMEOUT if default_timeout is None else float(default_timeout)
+    resolved_timeout = float(timeout) if timeout is not None else fallback_timeout
+
+    return {
+        "api_url": resolved_api_url,
+        "api_key": resolved_api_key,
+        "model": resolved_model,
+        "proxy": resolved_proxy,
+        "timeout": resolved_timeout,
+    }
+
+
+def request_chat_completion(
+    messages: list,
+    api_url=None,
+    api_key=None,
+    model=None,
+    proxy=None,
+    timeout=None,
+    temperature=None,
+    max_tokens=1500,
+    extra_body=None,
+) -> str:
+    """通用 OpenAI 兼容 Chat Completions 调用入口，支持多模态与手动指定配置。"""
+    settings = resolve_llm_settings(
+        api_url=api_url,
+        api_key=api_key,
+        model=model,
+        proxy=proxy,
+        timeout=timeout,
+    )
+    scheme, host, port, request_path = _parse_api_endpoint(settings["api_url"])
+    logging.info(
+        "LLM请求开始: endpoint=%s://%s:%s%s model=%s timeout=%.1fs proxy=%s",
+        scheme,
+        host,
+        port,
+        request_path,
+        settings["model"],
+        settings["timeout"],
+        _describe_proxy(settings["proxy"]),
+    )
+    start_time = time.time()
+
+    payload = {
+        "model": settings["model"],
+        "messages": messages,
+    }
+    if max_tokens is not None:
+        payload["max_tokens"] = int(max_tokens)
+    if temperature is not None:
+        payload["temperature"] = float(temperature)
+    if isinstance(extra_body, dict):
+        payload.update(extra_body)
+
+    if scheme == "http":
+        conn = SocksHTTPConnection(
+            host,
+            port=port,
+            timeout=settings["timeout"],
+            proxy_url=settings["proxy"] or None,
+        )
+    else:
+        context = ssl._create_unverified_context()
+        conn = SocksHTTPSConnection(
+            host,
+            port=port,
+            timeout=settings["timeout"],
+            context=context,
+            proxy_url=settings["proxy"] or None,
+        )
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {settings['api_key']}",
+    }
+
+    try:
+        conn.request(
+            "POST", request_path, body=json.dumps(payload), headers=headers
+        )
+        response = conn.getresponse()
+        response_data = response.read().decode("utf-8")
+        elapsed = time.time() - start_time
+        logging.info(
+            "LLM请求完成: status=%s elapsed=%.2fs response_bytes=%d",
+            response.status,
+            elapsed,
+            len(response_data),
+        )
+        if response.status != 200:
+            raise RuntimeError(
+                f"API request failed with status {response.status}: {response_data}"
+            )
+
+        result = json.loads(response_data)
+        content = result["choices"][0]["message"]["content"]
+        return content
+    except Exception:
+        logging.exception(
+            "LLM请求失败: api_url=%s model=%s timeout=%.1fs",
+            settings["api_url"],
+            settings["model"],
+            settings["timeout"],
+        )
+        raise
+    finally:
+        conn.close()
+
+
+def _request_ocr(
+    image_bytes: bytes,
+    media_type: str,
+    image_source: str,
+    api_url=None,
+    api_key=None,
+    model=None,
+    proxy=None,
+    timeout=None,
+) -> str:
+    has_override = any(v is not None for v in (api_url, api_key, model, proxy, timeout))
+    if not has_override:
+        resolved_key, resolved_proxy = _get_ocr_settings()
+        resolved_url = API_URL
+        resolved_model = MODEL_NAME
+        resolved_timeout = REQUEST_TIMEOUT
+    else:
+        settings = resolve_llm_settings(
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            proxy=proxy,
+            timeout=timeout,
+            default_timeout=REQUEST_TIMEOUT,
+        )
+        resolved_key = settings["api_key"]
+        resolved_proxy = settings["proxy"]
+        resolved_url = settings["api_url"]
+        resolved_model = settings["model"]
+        resolved_timeout = settings["timeout"]
+
     logging.info(
         "OCR请求开始: image_source=%s image_bytes=%d model=%s timeout=%.1fs proxy=%s",
         image_source,
         len(image_bytes),
-        MODEL_NAME,
-        REQUEST_TIMEOUT,
-        _describe_proxy(proxy_url),
+        resolved_model,
+        resolved_timeout,
+        _describe_proxy(resolved_proxy),
     )
     start_time = time.time()
     image_data = b64encode(image_bytes).decode("utf-8")
 
     payload = {
-        "model": MODEL_NAME,
+        "model": resolved_model,
         "messages": [
             {
                 "role": "user",
@@ -239,18 +465,36 @@ def _request_ocr(image_bytes: bytes, media_type: str, image_source: str) -> str:
         "max_tokens": 300,
     }
 
-    context = ssl._create_unverified_context()
-    conn = SocksHTTPSConnection(
-        API_URL,
-        timeout=REQUEST_TIMEOUT,
-        context=context,
-        proxy_url=proxy_url or None,
-    )
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    scheme, host, port, request_path = _parse_api_endpoint(resolved_url)
+    if scheme == "http":
+        conn = SocksHTTPConnection(
+            host,
+            port=port,
+            timeout=resolved_timeout,
+            proxy_url=resolved_proxy or None,
+        )
+    else:
+        context = ssl._create_unverified_context()
+        if resolved_url == API_URL and port == 443:
+            conn = SocksHTTPSConnection(
+                API_URL,
+                timeout=resolved_timeout,
+                context=context,
+                proxy_url=resolved_proxy or None,
+            )
+        else:
+            conn = SocksHTTPSConnection(
+                host,
+                port=port,
+                timeout=resolved_timeout,
+                context=context,
+                proxy_url=resolved_proxy or None,
+            )
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {resolved_key}"}
 
     try:
         conn.request(
-            "POST", "/v1/chat/completions", body=json.dumps(payload), headers=headers
+            "POST", request_path, body=json.dumps(payload), headers=headers
         )
         response = conn.getresponse()
         response_data = response.read().decode("utf-8")
@@ -274,20 +518,20 @@ def _request_ocr(image_bytes: bytes, media_type: str, image_source: str) -> str:
         logging.exception(
             "OCR请求失败: image_source=%s api_url=%s timeout=%.1fs",
             image_source,
-            API_URL,
-            REQUEST_TIMEOUT,
+            resolved_url,
+            resolved_timeout,
         )
         raise
     finally:
         conn.close()
 
 
-def ocr_image(image) -> str:
+def ocr_image(image, **llm_kwargs) -> str:
     """直接识别Pillow图片对象，不在磁盘创建临时文件。"""
     with BytesIO() as image_buffer:
         image.save(image_buffer, format="PNG")
         image_bytes = image_buffer.getvalue()
-    return _request_ocr(image_bytes, "image/png", "memory")
+    return _request_ocr(image_bytes, "image/png", "memory", **llm_kwargs)
 
 
 def ocr(image_path: str) -> str:

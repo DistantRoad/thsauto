@@ -4,7 +4,17 @@ import tempfile
 import unittest
 from unittest import mock
 
-from PIL import Image
+try:
+    from PIL import Image
+except ImportError:
+    class _DummyImage:
+        def save(self, buffer, format="PNG"):
+            buffer.write(b"\x89PNG\r\n\x1a\n")
+
+    class Image:
+        @staticmethod
+        def new(mode, size, color=None):
+            return _DummyImage()
 
 import llm_ocr
 
@@ -101,6 +111,30 @@ class OcrSettingsTests(unittest.TestCase):
             "socks5://192.168.2.88:10888",
             llm_ocr._describe_proxy("socks5://user:secret@192.168.2.88:10888"),
         )
+
+    def test_request_chat_completion_allows_manual_overrides(self):
+        connection = _FakeConnection()
+        with mock.patch.object(
+            llm_ocr,
+            "SocksHTTPSConnection",
+            return_value=connection,
+        ):
+            reply = llm_ocr.request_chat_completion(
+                messages=[{"role": "user", "content": "ping"}],
+                api_url="https://api.example.com/v1",
+                api_key="manual-key",
+                model="custom-vision-model",
+                proxy="",
+                temperature=0.2,
+                max_tokens=800,
+                extra_body={"top_p": 0.9},
+            )
+        self.assertEqual("A1b2", reply)
+        self.assertEqual("custom-vision-model", connection.request_body["model"])
+        self.assertEqual(0.2, connection.request_body["temperature"])
+        self.assertEqual(800, connection.request_body["max_tokens"])
+        self.assertEqual(0.9, connection.request_body["top_p"])
+        self.assertTrue(connection.closed)
 
 
 if __name__ == "__main__":
