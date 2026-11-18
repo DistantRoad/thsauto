@@ -36,7 +36,7 @@ class TradingCoreTests(unittest.TestCase):
         self.addCleanup(mock.patch.stopall)
 
     def test_python38_syntax_compatibility(self):
-        for filename in ("thsauto.py", "server.py", "llm_ocr.py", "start_server.py"):
+        for filename in ("thsauto.py", "server.py", "llm_ocr.py", "const.py", "start_server.py", "restart_ths_vms.py"):
             source = (ROOT / filename).read_text(encoding="utf-8")
             ast.parse(source, filename=filename, feature_version=(3, 8))
 

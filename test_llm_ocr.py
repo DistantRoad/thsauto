@@ -136,6 +136,28 @@ class OcrSettingsTests(unittest.TestCase):
         self.assertEqual(0.9, connection.request_body["top_p"])
         self.assertTrue(connection.closed)
 
+    def test_non_200_response_raises_runtime_error_and_closes_connection(self):
+        class _ErrorResponse:
+            status = 502
+            def read(self):
+                return b"Bad Gateway"
+
+        connection = _FakeConnection()
+        connection.getresponse = lambda: _ErrorResponse()
+        with mock.patch.object(
+            llm_ocr,
+            "SocksHTTPConnection",
+            return_value=connection,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "502"):
+                llm_ocr.request_chat_completion(
+                    messages=[{"role": "user", "content": "ping"}],
+                    api_url="http://api.example.com:8080/v1",
+                    api_key="manual-key",
+                    proxy="",
+                )
+        self.assertTrue(connection.closed)
+
 
 if __name__ == "__main__":
     unittest.main()

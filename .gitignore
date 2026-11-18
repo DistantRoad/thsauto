@@ -1,9 +1,10 @@
 .idea/
-**/__pycache__
-**/.vscode
+**/__pycache__/
+*.pyc
+**/.vscode/
 ocr.png
 ocr_*.png
 *.log
+*.log.*
 .aider*
 .DS_Store
-.gitignore

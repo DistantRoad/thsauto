@@ -193,8 +193,7 @@ class CommandCleanupTests(unittest.TestCase):
     def test_cleanup_failure_blocks_command_and_releases_lock(self):
         self.server.auto.dismiss_popups.side_effect = RuntimeError("残留提示窗口无法关闭")
 
-        with mock.patch.object(self.server.logging, "exception"), \
-                mock.patch.object(self.server.traceback, "print_exc"):
+        with mock.patch.object(self.server.logging, "exception"):
             body, status = self.server.get_balance()
 
         self.assertEqual(400, status)

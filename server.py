@@ -1,14 +1,13 @@
 import functools
 import logging
-from flask import Flask, request, jsonify
-from thsauto import ThsAuto
+import os
 import subprocess
-import time
 import sys
 import threading
-import traceback
+import time
 
-import os
+from flask import Flask, jsonify, request
+from thsauto import ThsAuto
 
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
@@ -71,33 +70,29 @@ interval = 0.5
 def interval_call(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        global interval
-        global lock
         global next_time
-        lock.acquire()
-        now = time.time()
-        if now < next_time:
-            time.sleep(next_time - now)
-        start_time = time.time()
-        logging.info(
-            "HTTP请求开始: path=%s method=%s args=%s",
-            request.path,
-            request.method,
-            dict(request.args),
-        )
-        try:
-            auto.dismiss_popups()
-            rt = func(*args, **kwargs)
-        except Exception as e:
-            logging.exception("HTTP请求异常: path=%s", request.path)
-            traceback.print_exc()
-            rt = ({'code': 1, 'status': 'failed', 'msg': '{}'.format(e)}, 400)
-        finally:
-            elapsed = time.time() - start_time
-            logging.info("HTTP请求结束: path=%s elapsed=%.2fs", request.path, elapsed)
-        next_time = time.time() + interval
-        lock.release()
-        return rt
+        with lock:
+            now = time.time()
+            if now < next_time:
+                time.sleep(next_time - now)
+            start_time = time.time()
+            logging.info(
+                "HTTP请求开始: path=%s method=%s args=%s",
+                request.path,
+                request.method,
+                dict(request.args),
+            )
+            try:
+                auto.dismiss_popups()
+                rt = func(*args, **kwargs)
+            except Exception as e:
+                logging.exception("HTTP请求异常: path=%s", request.path)
+                rt = ({'code': 1, 'status': 'failed', 'msg': '{}'.format(e)}, 400)
+            finally:
+                elapsed = time.time() - start_time
+                logging.info("HTTP请求结束: path=%s elapsed=%.2fs", request.path, elapsed)
+                next_time = time.time() + interval
+            return rt
     return wrapper
 
 @app.route('/thsauto/balance', methods = ['GET'])
@@ -252,14 +247,6 @@ def ai_task():
         include_screenshot=include_screenshot,
     )
     return jsonify(result), 200
-
-
-@app.route('/thsauto/test', methods = ['GET'])
-@interval_call
-def test():
-    auto.active_main_window()
-    auto.test()
-    return jsonify({}), 200
 
 
 if __name__ == '__main__':

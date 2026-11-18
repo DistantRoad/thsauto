@@ -305,6 +305,60 @@ def resolve_llm_settings(
     }
 
 
+def _post_chat_completions(
+    api_url: str,
+    api_key: str,
+    proxy_url: str,
+    timeout: float,
+    payload: dict,
+    log_label: str = "LLM",
+) -> str:
+    scheme, host, port, request_path = _parse_api_endpoint(api_url)
+    start_time = time.time()
+    if scheme == "http":
+        conn = SocksHTTPConnection(
+            host,
+            port=port,
+            timeout=timeout,
+            proxy_url=proxy_url or None,
+        )
+    else:
+        context = ssl._create_unverified_context()
+        conn = SocksHTTPSConnection(
+            host,
+            port=port,
+            timeout=timeout,
+            context=context,
+            proxy_url=proxy_url or None,
+        )
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    try:
+        conn.request("POST", request_path, body=json.dumps(payload), headers=headers)
+        response = conn.getresponse()
+        response_data = response.read().decode("utf-8")
+        elapsed = time.time() - start_time
+        logging.info(
+            "%s请求完成: status=%s elapsed=%.2fs response_bytes=%d",
+            log_label,
+            response.status,
+            elapsed,
+            len(response_data),
+        )
+        if response.status != 200:
+            raise RuntimeError(
+                f"API request failed with status {response.status}: {response_data}"
+            )
+        result = json.loads(response_data)
+        return result["choices"][0]["message"]["content"]
+    finally:
+        conn.close()
+
+
 def request_chat_completion(
     messages: list,
     api_url=None,
@@ -335,7 +389,6 @@ def request_chat_completion(
         settings["timeout"],
         _describe_proxy(settings["proxy"]),
     )
-    start_time = time.time()
 
     payload = {
         "model": settings["model"],
@@ -348,49 +401,15 @@ def request_chat_completion(
     if isinstance(extra_body, dict):
         payload.update(extra_body)
 
-    if scheme == "http":
-        conn = SocksHTTPConnection(
-            host,
-            port=port,
-            timeout=settings["timeout"],
-            proxy_url=settings["proxy"] or None,
-        )
-    else:
-        context = ssl._create_unverified_context()
-        conn = SocksHTTPSConnection(
-            host,
-            port=port,
-            timeout=settings["timeout"],
-            context=context,
-            proxy_url=settings["proxy"] or None,
-        )
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {settings['api_key']}",
-    }
-
     try:
-        conn.request(
-            "POST", request_path, body=json.dumps(payload), headers=headers
+        return _post_chat_completions(
+            api_url=settings["api_url"],
+            api_key=settings["api_key"],
+            proxy_url=settings["proxy"],
+            timeout=settings["timeout"],
+            payload=payload,
+            log_label="LLM",
         )
-        response = conn.getresponse()
-        response_data = response.read().decode("utf-8")
-        elapsed = time.time() - start_time
-        logging.info(
-            "LLM请求完成: status=%s elapsed=%.2fs response_bytes=%d",
-            response.status,
-            elapsed,
-            len(response_data),
-        )
-        if response.status != 200:
-            raise RuntimeError(
-                f"API request failed with status {response.status}: {response_data}"
-            )
-
-        result = json.loads(response_data)
-        content = result["choices"][0]["message"]["content"]
-        return content
     except Exception:
         logging.exception(
             "LLM请求失败: api_url=%s model=%s timeout=%.1fs",
@@ -399,8 +418,6 @@ def request_chat_completion(
             settings["timeout"],
         )
         raise
-    finally:
-        conn.close()
 
 
 def _request_ocr(
@@ -442,7 +459,6 @@ def _request_ocr(
         resolved_timeout,
         _describe_proxy(resolved_proxy),
     )
-    start_time = time.time()
     image_data = b64encode(image_bytes).decode("utf-8")
 
     payload = {
@@ -465,53 +481,15 @@ def _request_ocr(
         "max_tokens": 300,
     }
 
-    scheme, host, port, request_path = _parse_api_endpoint(resolved_url)
-    if scheme == "http":
-        conn = SocksHTTPConnection(
-            host,
-            port=port,
-            timeout=resolved_timeout,
-            proxy_url=resolved_proxy or None,
-        )
-    else:
-        context = ssl._create_unverified_context()
-        if resolved_url == API_URL and port == 443:
-            conn = SocksHTTPSConnection(
-                API_URL,
-                timeout=resolved_timeout,
-                context=context,
-                proxy_url=resolved_proxy or None,
-            )
-        else:
-            conn = SocksHTTPSConnection(
-                host,
-                port=port,
-                timeout=resolved_timeout,
-                context=context,
-                proxy_url=resolved_proxy or None,
-            )
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {resolved_key}"}
-
     try:
-        conn.request(
-            "POST", request_path, body=json.dumps(payload), headers=headers
+        content = _post_chat_completions(
+            api_url=resolved_url,
+            api_key=resolved_key,
+            proxy_url=resolved_proxy,
+            timeout=resolved_timeout,
+            payload=payload,
+            log_label="OCR",
         )
-        response = conn.getresponse()
-        response_data = response.read().decode("utf-8")
-        elapsed = time.time() - start_time
-        logging.info(
-            "OCR请求完成: status=%s elapsed=%.2fs response_bytes=%d",
-            response.status,
-            elapsed,
-            len(response_data),
-        )
-        if response.status != 200:
-            raise Exception(
-                f"API request failed with status {response.status}: {response_data}"
-            )
-
-        result = json.loads(response_data)
-        content = result["choices"][0]["message"]["content"]
         logging.info("OCR识别原始结果: %r", content)
         return content
     except Exception:
@@ -522,8 +500,6 @@ def _request_ocr(
             resolved_timeout,
         )
         raise
-    finally:
-        conn.close()
 
 
 def ocr_image(image, **llm_kwargs) -> str:

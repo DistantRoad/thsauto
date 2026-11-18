@@ -87,15 +87,11 @@ WS_CAPTION = 0x00C00000
 WS_EX_TOOLWINDOW = 0x00000080
 WM_GETTEXT = 0x000D
 WM_GETTEXTLENGTH = 0x000E
-WM_SETTEXT = 0x000C
 WM_PASTE = 0x0302
 BM_GETCHECK = 0x00F0
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
 SPI_GETWORKAREA = 0x0030
-ES_PASSWORD = 0x0020
-EM_SETSEL = 0x00B1
-EM_REPLACESEL = 0x00C2
 
 _TABLE_IDENTITY_COLUMNS = (
     "证券代码",
@@ -340,36 +336,6 @@ def hot_key(keys: Iterable[str]):
         with_newlines=True,
         vk_packet=False,
     )
-
-
-def set_text(control, string):
-    editor = _resolve_wrapper(control)
-    value = "" if string is None else str(string)
-    logging.info(
-        "设置文本: handle=%s class=%s value=%r",
-        getattr(editor, "handle", "unknown"),
-        editor.friendly_class_name() if hasattr(editor, "friendly_class_name") else type(editor).__name__,
-        value,
-    )
-    editor.set_focus()
-    try:
-        editor.set_edit_text(value)
-    except Exception:
-        logging.exception("set_edit_text失败，回退到type_keys: handle=%s", getattr(editor, "handle", "unknown"))
-        editor.click_input()
-        keyboard.send_keys("{END}", pause=sleep_time, vk_packet=False)
-        for _ in range(8):
-            keyboard.send_keys("{BACKSPACE}", pause=sleep_time, vk_packet=False)
-        if value:
-            editor.type_keys(
-                value,
-                set_foreground=False,
-                pause=sleep_time,
-                with_spaces=True,
-                with_tabs=True,
-                with_newlines=True,
-                vk_packet=False,
-            )
 
 
 def get_text(control):
@@ -899,49 +865,6 @@ class ThsAuto:
             value,
         )
         return value
-
-    def _send_text_message(self, editor, message, value, label):
-        handle = getattr(editor, "handle", None)
-        if not handle:
-            raise RuntimeError("验证码输入框没有有效句柄")
-        text_buffer = ctypes.create_unicode_buffer(str(value))
-        result = ctypes.windll.user32.SendMessageW(
-            handle,
-            message,
-            0,
-            ctypes.cast(text_buffer, ctypes.c_void_p).value,
-        )
-        logging.info(
-            "%s完成: handle=%s value=%r result=%s",
-            label,
-            handle,
-            value,
-            result,
-        )
-        return result
-
-    def _send_wm_settext(self, editor, value):
-        return self._send_text_message(editor, WM_SETTEXT, value, "SendMessageW(WM_SETTEXT)")
-
-    def _send_em_replacesel(self, editor, value):
-        handle = getattr(editor, "handle", None)
-        if not handle:
-            raise RuntimeError("验证码输入框没有有效句柄")
-        ctypes.windll.user32.SendMessageW(handle, EM_SETSEL, 0, -1)
-        text_buffer = ctypes.create_unicode_buffer(str(value))
-        result = ctypes.windll.user32.SendMessageW(
-            handle,
-            EM_REPLACESEL,
-            1,
-            ctypes.cast(text_buffer, ctypes.c_void_p).value,
-        )
-        logging.info(
-            "SendMessageW(EM_REPLACESEL)完成: handle=%s value=%r result=%s",
-            handle,
-            value,
-            result,
-        )
-        return result
 
     def _clear_ocr_editor(self, editor):
         self._clear_editor_by_backspace(editor, context="验证码输入框")
@@ -1777,24 +1700,6 @@ class ThsAuto:
         except Exception:
             logging.exception("检查或调整主窗口尺寸失败")
 
-    def right_click_menu(self, hwnd, x, y, idx=None, key=None):
-        control = _resolve_wrapper(hwnd)
-        rect = control.rectangle()
-        click_x = x if x >= 0 else (rect.right - rect.left) + x
-        click_y = y if y >= 0 else (rect.bottom - rect.top) + y
-        control.click_input(button="right", coords=(click_x, click_y))
-        time.sleep(sleep_time)
-        if idx is not None:
-            while idx >= 0:
-                hot_key(["down_arrow"])
-                idx -= 1
-            hot_key(["enter"])
-        elif key is not None:
-            if isinstance(key, list):
-                hot_key(key)
-            else:
-                hot_key([key])
-
     def switch_to_normal(self):
         logging.info("切换到普通交易标签")
         self.active_main_window()
@@ -2572,6 +2477,3 @@ class ThsAuto:
         if include_screenshot and last_screenshot_b64:
             response["screenshot_base64"] = last_screenshot_b64
         return response
-
-    def test(self):
-        pass
