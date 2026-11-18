@@ -122,6 +122,35 @@ python server.py 0.0.0.0 5000 C:\Users\match\Desktop\THS\xiadan.exe
 
 更新代码时，推送到 master 后结束机器上的 `py.exe` / `python.exe` 进程，再重新运行桌面脚本即可。注意：推送到 master 的代码会在每台机器下次启动（包括意外重启）时自动生效，推送前请确认代码可以正常运行。
 
+### 批量重启 Windows 虚拟机
+
+在管理机的仓库目录运行 `restart_ths_vms.py`，需要 Python 3.8+、`govc`、`git`，并沿用已配置的 `GOVC_URL` 等连接环境变量。当 `GOVC_URL` 指向默认 ESXi 主机（`192.168.2.68` 或 `192.168.2.66`）时，脚本会自动沿用同一凭据同时管理两台宿主机上的 Windows 虚拟机；也可用 `--esxi-host` 显式指定宿主机。
+
+当前运行 `thsauto` 的 Windows 虚拟机清单（默认端口 `6003`，不含默认排除的 `Windows 7 - Forex`、`Windows 7 - 书宾`）：
+
+- **ESXi `192.168.2.68`**（11 台）：`Windows 7 - 王道远` (`192.168.2.224`)、`Windows 7 - 王道远（国金）` (`192.168.2.225`)、`Windows 7 - 丁松` (`192.168.2.226`)、`Windows 7 - 闫虎` (`192.168.2.227`)、`Windows 7 - 老孟` (`192.168.2.230`)、`Windows 7 - 张鹏` (`192.168.2.231`)、`Windows 7 - 姚丰` (`192.168.2.233`)、`Windows 7 - 兴业` (`192.168.2.234`)、`Windows 7 - 爸爸` (`192.168.2.235`)、`Windows 7 - 婉君` (`192.168.2.236`)、`Windows 7 - 张鹏(长城)` (`192.168.2.240`)
+- **ESXi `192.168.2.66`**（2 台）：`Windows 7 - 吴鹏飞` (`192.168.2.238`)、`Windows 7 - 郭占广` (`192.168.2.239`)
+
+```bash
+# 预览目标机器
+python3 restart_ths_vms.py --dry-run
+
+# 重启所有 Windows 虚拟机上的服务，默认排除名称包含 Forex 或 书宾 的机器
+python3 restart_ths_vms.py
+
+# 只重启一台，使用完整的虚拟机名称
+python3 restart_ths_vms.py --vm 'Windows 7 - 爸爸'
+
+# 保存逐台结果
+python3 restart_ths_vms.py --report /tmp/thsauto-restart-report.json
+```
+
+脚本通过 `govc` 在已登录、未锁屏的 Windows 桌面运行 `start_ths_server.bat`，Windows 中需能使用 `py` 命令。它会结束监听服务端口的 Python 进程，再打开桌面脚本；随后比较部署文件与 `origin/master` 最新版本，并通过 HTTP OPTIONS 检查接口是否可访问。有失败时返回退出码 `1`，全部成功返回 `0`；关机、VMware Tools 未运行、桌面脚本缺失等情况会明确列出。
+
+默认同时处理 3 台，单台服务启动等待 180 秒。启动命令未送达时自动重试一次。通过 `--exclude '名称片段'` 可增加排除项，Forex、书宾 始终排除；`--jobs`、`--timeout` 可调整并行数和等待时间。
+
+管理机临时监听 HTTP 端口 `18769`，供虚拟机下载重启指令和回传结果，运行结束后自动关闭。虚拟机需能访问这个端口，管理机需能访问各虚拟机的服务端口（默认 `6003`）。多网卡时用 `--host 192.168.2.192` 指定虚拟机可访问的管理机地址；`--helper-port`、`--port` 可指定相应端口。`--no-version-check` 可跳过远端版本比较，此时无需 `git`。完整参数见 `python3 restart_ths_vms.py --help`。
+
 ### 返回格式
 
 所有接口均为 HTTP GET，返回 JSON：
@@ -237,6 +266,8 @@ POST JSON 请求示例（所有大模型参数均可每次手动指定，省略�
 
 - `test_llm_ocr.py`：OCR 模块单元测试，不依赖客户端，运行 `python -m unittest test_llm_ocr`
 - `test_thsauto_popups.py`：命令前弹窗清理测试，模拟窗口和接口，不依赖 Windows 或客户端，运行 `python -m unittest test_thsauto_popups`
+- `test_thsauto_trading.py`：核心交易与界面自动化单元测试（表格空占位行/汇总行过滤、价格精度格式化、按需委托确认、纯键盘精准撤单、资金解析容错等），运行 `python -m unittest test_thsauto_trading`
+- `test_restart_ths_vms.py`：批量重启脚本测试，模拟 Windows 进程并使用本机 HTTP 服务验证回传、重试和版本检查，运行 `python -m unittest test_restart_ths_vms`
 - `test.py`：手动调试脚本，需要客户端已运行
 
 ## 注意事项

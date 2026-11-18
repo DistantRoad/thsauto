@@ -6,7 +6,7 @@ import re
 import subprocess
 import time
 from base64 import b64encode
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from io import BytesIO
 from logging.handlers import RotatingFileHandler
 from typing import Iterable
@@ -48,14 +48,17 @@ def _setup_logging():
         for handler in root_logger.handlers
     )
     if not has_file:
-        file_handler = RotatingFileHandler(
-            LOG_FILE_PATH,
-            maxBytes=LOG_MAX_BYTES,
-            backupCount=LOG_BACKUP_COUNT,
-            encoding="utf-8",
-        )
-        file_handler.setFormatter(formatter)
-        root_logger.addHandler(file_handler)
+        try:
+            file_handler = RotatingFileHandler(
+                LOG_FILE_PATH,
+                maxBytes=LOG_MAX_BYTES,
+                backupCount=LOG_BACKUP_COUNT,
+                encoding="utf-8",
+            )
+            file_handler.setFormatter(formatter)
+            root_logger.addHandler(file_handler)
+        except OSError as exc:
+            root_logger.warning("无法打开日志文件 %s，仅输出到控制台: %s", LOG_FILE_PATH, exc)
 
 
 _setup_logging()
@@ -76,6 +79,8 @@ TASKBAR_RESERVED_HEIGHT = 40
 RIGHT_PANEL_CONTROL_ID = 0xE901
 COMMON_GRID_CONTROL_ID = 0x417
 TREE_CONTROL_ID = 129
+LEFT_BOTTOM_TAB_CONTROL_ID = 0x98A
+CANCEL_NO_CONFIRM_CHECKBOX_ID = 0x96B
 CAPTCHA_EDITOR_CONTROL_ID = 0x964
 CAPTCHA_IMAGE_CONTROL_ID = 0x965
 WS_CAPTION = 0x00C00000
@@ -84,9 +89,25 @@ WM_GETTEXT = 0x000D
 WM_GETTEXTLENGTH = 0x000E
 WM_SETTEXT = 0x000C
 WM_PASTE = 0x0302
+BM_GETCHECK = 0x00F0
+CF_UNICODETEXT = 13
+GMEM_MOVEABLE = 0x0002
+SPI_GETWORKAREA = 0x0030
 ES_PASSWORD = 0x0020
 EM_SETSEL = 0x00B1
 EM_REPLACESEL = 0x00C2
+
+_TABLE_IDENTITY_COLUMNS = (
+    "证券代码",
+    "合同编号",
+    "证券名称",
+    "委托编号",
+    "成交编号",
+    "流水号",
+    "申购代码",
+    "基金代码",
+    "股东代码",
+)
 
 _SEND_KEYS_TOKEN_MAP = {
     "enter": "{ENTER}",
@@ -193,8 +214,104 @@ def _to_send_keys_token(key):
     return key
 
 
-def get_clipboard_data():
-    for index in range(5):
+def clear_clipboard():
+    """使用 Win32 API 真正清空剪贴板，避免外部 cmd/clip 进程开销或残留文本。"""
+    if hasattr(ctypes, "windll"):
+        try:
+            user32 = ctypes.windll.user32
+            for _ in range(5):
+                if user32.OpenClipboard(None):
+                    try:
+                        user32.EmptyClipboard()
+                        return True
+                    finally:
+                        user32.CloseClipboard()
+                time.sleep(sleep_time)
+        except Exception:
+            logging.debug("Win32 清空剪贴板失败，回退 cmd clip", exc_info=True)
+    subprocess.run(["cmd", "/c", "clip"], input="", text=True, check=False)
+    return False
+
+
+def set_clipboard_unicode_text(value):
+    """使用 Win32 CF_UNICODETEXT 写入剪贴板（兼容 32/64 位 Python，无编码与换行污染）。"""
+    text = "" if value is None else str(value)
+    if hasattr(ctypes, "windll"):
+        try:
+            kernel32 = ctypes.windll.kernel32
+            user32 = ctypes.windll.user32
+
+            global_alloc = kernel32.GlobalAlloc
+            global_alloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+            global_alloc.restype = ctypes.c_void_p
+
+            global_lock = kernel32.GlobalLock
+            global_lock.argtypes = [ctypes.c_void_p]
+            global_lock.restype = ctypes.c_void_p
+
+            global_unlock = kernel32.GlobalUnlock
+            global_unlock.argtypes = [ctypes.c_void_p]
+            global_unlock.restype = ctypes.c_int
+
+            global_free = kernel32.GlobalFree
+            global_free.argtypes = [ctypes.c_void_p]
+            global_free.restype = ctypes.c_void_p
+
+            open_clipboard = user32.OpenClipboard
+            open_clipboard.argtypes = [ctypes.c_void_p]
+            open_clipboard.restype = ctypes.c_int
+
+            empty_clipboard = user32.EmptyClipboard
+            empty_clipboard.argtypes = []
+            empty_clipboard.restype = ctypes.c_int
+
+            set_clipboard_data = user32.SetClipboardData
+            set_clipboard_data.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+            set_clipboard_data.restype = ctypes.c_void_p
+
+            close_clipboard = user32.CloseClipboard
+            close_clipboard.argtypes = []
+            close_clipboard.restype = ctypes.c_int
+
+            encoded = text.encode("utf-16-le") + b"\x00\x00"
+            for _ in range(5):
+                if open_clipboard(None):
+                    hmem = None
+                    try:
+                        empty_clipboard()
+                        hmem = global_alloc(GMEM_MOVEABLE, len(encoded))
+                        if not hmem:
+                            raise MemoryError("GlobalAlloc failed")
+                        ptr = global_lock(hmem)
+                        if not ptr:
+                            raise MemoryError("GlobalLock failed")
+                        try:
+                            ctypes.memmove(ptr, encoded, len(encoded))
+                        finally:
+                            global_unlock(hmem)
+                        if not set_clipboard_data(CF_UNICODETEXT, hmem):
+                            raise RuntimeError("SetClipboardData failed")
+                        hmem = None
+                        return
+                    finally:
+                        if hmem:
+                            global_free(hmem)
+                        close_clipboard()
+                time.sleep(sleep_time)
+        except Exception:
+            logging.debug("Win32 写入剪贴板失败，回退 cmd clip", exc_info=True)
+    subprocess.run(["cmd", "/c", "clip"], input=text, text=True, check=True)
+
+
+def get_clipboard_data(max_attempts=5):
+    for index in range(max_attempts):
+        if hasattr(ctypes, "windll"):
+            try:
+                if not ctypes.windll.user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
+                    time.sleep(sleep_time)
+                    continue
+            except Exception:
+                pass
         try:
             data = clipboard.GetData()
             logging.info(
@@ -204,7 +321,7 @@ def get_clipboard_data():
             )
             return data
         except Exception:
-            logging.exception("剪贴板读取失败: attempt=%d", index + 1)
+            logging.debug("剪贴板暂不可读: attempt=%d", index + 1, exc_info=True)
             time.sleep(sleep_time)
     logging.info("剪贴板读取结束: 未获取到数据")
     return None
@@ -284,11 +401,52 @@ def _rect_tuple(control):
     return rect.left, rect.top, rect.right, rect.bottom
 
 
+def _parse_decimal_safe(value):
+    if value is None:
+        return None
+    cleaned = str(value).strip().replace(",", "")
+    if not cleaned or cleaned in ("-", "--", "—", "N/A", "nan", "None"):
+        return None
+    try:
+        return Decimal(cleaned)
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def format_trade_price(price) -> str:
+    """规范化委托价格：消除二进制浮点误差，兼容 A 股 2 位小数与 ETF/可转债/逆回购 3 位小数。"""
+    dec = _parse_decimal_safe(price)
+    if dec is None:
+        raise ValueError(f"无效的委托价格: {price!r}")
+    if dec <= 0:
+        raise ValueError(f"委托价格必须大于 0: {price!r}")
+    quantized = dec.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
+    text = format(quantized, "f")
+    if text.endswith("0"):
+        text = text[:-1]
+    return text
+
+
+def _is_placeholder_or_summary_row(row: dict, keys: list) -> bool:
+    if not row:
+        return True
+    stripped_values = [str(v).strip() for v in row.values()]
+    if not any(stripped_values):
+        return True
+    present_id_cols = [col for col in _TABLE_IDENTITY_COLUMNS if col in row]
+    if present_id_cols:
+        if all(not str(row.get(col, "")).strip() for col in present_id_cols):
+            return True
+    return False
+
+
 def parse_table(text):
     if not text:
         return []
     lines = text.split("\t\r\n")
-    keys = lines[0].split("\t")
+    keys = [key for key in lines[0].split("\t") if key != ""]
+    if not keys:
+        return []
     result = []
     for i in range(1, len(lines)):
         if not lines[i]:
@@ -297,7 +455,7 @@ def parse_table(text):
         items = lines[i].split("\t")
         for j in range(min(len(keys), len(items))):
             info[keys[j]] = items[j]
-        if info:
+        if info and not _is_placeholder_or_summary_row(info, keys):
             result.append(info)
     return result
 
@@ -414,14 +572,47 @@ class ThsAuto:
         logging.info("检测到弹窗数量: %d", len(windows))
         return windows
 
+    @staticmethod
+    def _is_persistent_tool_window(window) -> bool:
+        try:
+            return bool(window.exstyle() & WS_EX_TOOLWINDOW and not (window.style() & WS_CAPTION))
+        except Exception:
+            return False
+
+    def _dismiss_stubborn_popup(self, popup):
+        """关闭不响应 Esc 的模态弹窗（如仅含 是/否 按钮的对话框），严禁点击‘是’。"""
+        try:
+            descendants = popup.descendants(class_name="Button")
+            if isinstance(descendants, Iterable):
+                for btn in descendants:
+                    try:
+                        if not btn.is_visible() or not btn.is_enabled():
+                            continue
+                        cid = _control_id(btn)
+                        text = get_text(btn).strip()
+                        if cid == 7 or any(token in text for token in ("否(&N)", "否(N)", "取消")) or text == "否":
+                            logging.info("点击取消/否按钮关闭残留弹窗: handle=%s text=%r", getattr(popup, "handle", None), text)
+                            btn.click_input()
+                            return
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        try:
+            logging.info("发送 WM_CLOSE 关闭不响应 Esc 的残留弹窗: handle=%s", getattr(popup, "handle", None))
+            popup.close()
+        except Exception:
+            logging.debug("发送 WM_CLOSE 关闭残留弹窗失败", exc_info=True)
+
     def dismiss_popups(self, max_attempts=20):
-        """执行命令前逐个用 Esc 关闭本客户端的残留提示窗口。"""
+        """执行命令前逐个关闭本客户端的残留提示窗口。"""
         if self.app is None or self.main_window is None:
             # 客户端未运行时无需清理，后续命令仍按各自流程处理。
             if not self.bind_client(timeout=2, log_failure=False):
                 return 0
 
         escape_count = 0
+        last_escaped_handle = None
         for attempt in range(max_attempts + 1):
             popup = None
             for window in self._popup_windows():
@@ -430,7 +621,7 @@ class ThsAuto:
                     if window.is_visible() and window.is_enabled():
                         # 同花顺有常驻的无标题栏工具窗口（也使用 #32770 类），
                         # 不是提示框，不会响应 Esc，不能仅凭可见性判断。
-                        if window.exstyle() & WS_EX_TOOLWINDOW and not window.style() & WS_CAPTION:
+                        if self._is_persistent_tool_window(window):
                             continue
                         popup = window
                         break
@@ -440,18 +631,22 @@ class ThsAuto:
 
             if popup is None and self.main_window.is_enabled():
                 if escape_count:
-                    logging.info("残留提示窗口清理完成，共发送 %s 次 Esc", escape_count)
+                    logging.info("残留提示窗口清理完成，共发送 %s 次关闭指令", escape_count)
                 return escape_count
 
             if attempt == max_attempts:
                 break
 
             if popup is not None:
+                current_handle = getattr(popup, "handle", None)
                 try:
                     popup.set_focus()
                     hot_key(["esc"])
                     escape_count += 1
-                    logging.info("向残留提示窗口发送 Esc: handle=%s", popup.handle)
+                    logging.info("向残留提示窗口发送 Esc: handle=%s", current_handle)
+                    if current_handle is not None and current_handle == last_escaped_handle:
+                        self._dismiss_stubborn_popup(popup)
+                    last_escaped_handle = current_handle
                 except Exception:
                     logging.debug("关闭残留提示窗口失败，将重新检查", exc_info=True)
             time.sleep(0.2)
@@ -482,8 +677,40 @@ class ThsAuto:
             logging.exception("读取弹窗按钮文本失败: handle=%s", getattr(window, "handle", "unknown"))
         return texts
 
+    def _find_yes_button(self, popup):
+        try:
+            for btn in popup.descendants(class_name="Button"):
+                try:
+                    if not btn.is_visible() or not btn.is_enabled():
+                        continue
+                except Exception:
+                    continue
+                cid = _control_id(btn)
+                text = get_text(btn).strip()
+                if cid == 6 or "是(&Y)" in text or "是(Y)" in text or text == "是":
+                    return btn
+        except Exception:
+            pass
+        return None
+
+    def _find_trade_confirm_popup(self):
+        for popup in self._popup_windows():
+            if self._is_persistent_tool_window(popup):
+                continue
+            try:
+                if not popup.is_visible() or not popup.is_enabled():
+                    continue
+            except Exception:
+                continue
+            yes_btn = self._find_yes_button(popup)
+            if yes_btn is not None:
+                return popup, yes_btn
+        return None, None
+
     def _find_cancel_confirm_popup(self):
         for popup in self._popup_windows():
+            if self._is_persistent_tool_window(popup):
+                continue
             static_texts = self._window_static_texts(popup)
             button_texts = self._window_button_texts(popup)
             joined_text = " ".join(static_texts + button_texts)
@@ -720,14 +947,9 @@ class ThsAuto:
         self._clear_editor_by_backspace(editor, context="验证码输入框")
 
     def _set_clipboard_text(self, value):
-        logging.info("准备写入剪贴板用于验证码粘贴: value=%r", value)
-        subprocess.run(
-            ["cmd", "/c", "clip"],
-            input=value,
-            text=True,
-            check=True,
-        )
-        logging.info("验证码文本已写入剪贴板")
+        logging.info("准备写入剪贴板: value=%r", value)
+        set_clipboard_unicode_text(value)
+        logging.info("文本已写入剪贴板")
 
     def _editor_value(self, editor):
         return self._ocr_editor_value(editor)
@@ -790,6 +1012,17 @@ class ThsAuto:
     def _clear_price_editor(self, editor):
         self._clear_editor_by_backspace(editor, context="价格字段", steps=8)
 
+    @staticmethod
+    def _trade_field_matches(expected: str, actual: str, field_name: str) -> bool:
+        if actual == expected:
+            return True
+        if field_name in ("买卖价格", "买卖数量"):
+            exp_dec = _parse_decimal_safe(expected)
+            act_dec = _parse_decimal_safe(actual)
+            if exp_dec is not None and act_dec is not None and exp_dec == act_dec:
+                return True
+        return False
+
     def _set_trade_field(self, control_id, value, field_name):
         editor = self._get_right_control(control_id, class_name="Edit")
         expected = "" if value is None else str(value)
@@ -820,7 +1053,7 @@ class ThsAuto:
                 expected,
                 actual,
             )
-            if actual == expected:
+            if self._trade_field_matches(expected, actual, field_name):
                 return editor
             if actual:
                 logging.info(
@@ -837,7 +1070,6 @@ class ThsAuto:
                 )
                 return editor
         raise RuntimeError(f"{field_name}填写失败，期望值={expected!r}，实际值={actual!r}")
-        return editor
 
     def _paste_ocr_code(self, editor, value):
         editor.click_input()
@@ -945,47 +1177,87 @@ class ThsAuto:
 
     def _wait_clipboard_table(self, control, copy_each_retry=False, ocr_kwargs=None):
         data = None
-        retry = 0
-        while not data and retry < retry_time:
+        max_attempts = 3 if copy_each_retry else 2
+        for attempt in range(max_attempts):
             logging.info(
                 "等待表格数据: attempt=%d/%d copy_each_retry=%s handle=%s",
-                retry + 1,
-                retry_time,
+                attempt + 1,
+                max_attempts,
                 copy_each_retry,
                 getattr(control, "handle", "unknown"),
             )
-            if retry == 0 or copy_each_retry:
-                self.copy_table(control, ocr_kwargs=ocr_kwargs)
-            retry += 1
+            self.copy_table(control, ocr_kwargs=ocr_kwargs)
             time.sleep(sleep_time)
-            data = get_clipboard_data()
+            data = get_clipboard_data(max_attempts=3)
             if data:
                 logging.info("表格数据获取成功: rows_hint=%d", max(0, data.count("\t\r\n") - 1))
-        if not data:
-            logging.info("表格数据获取失败: 已达到最大重试次数")
+                return data
+        logging.info("表格数据获取失败: 已达到最大重试次数(%d)", max_attempts)
         return data
 
     def _fill_trade_form(self, stock_no, amount, price):
-        self._set_trade_field(0x408, stock_no, "证券代码")
+        stock_str = str(stock_no or "").strip()
+        if not stock_str:
+            raise ValueError("证券代码不能为空")
+        amount_int = int(amount)
+        if amount_int <= 0:
+            raise ValueError(f"委托数量必须为正整数: {amount!r}")
+        price_str = format_trade_price(price) if price is not None else None
+
+        self._set_trade_field(0x408, stock_str, "证券代码")
         time.sleep(refresh_sleep_time)
-        if price is not None:
-            self._set_trade_field(0x409, "%.3f" % price, "买卖价格")
+        if price_str is not None:
+            self._set_trade_field(0x409, price_str, "买卖价格")
             time.sleep(sleep_time)
-        self._set_trade_field(0x40A, str(amount), "买卖数量")
+        self._set_trade_field(0x40A, str(amount_int), "买卖数量")
         time.sleep(sleep_time)
+
+    def _close_result_popup(self, popup):
+        if popup is None:
+            return
+        try:
+            for btn in popup.descendants(class_name="Button"):
+                try:
+                    if not btn.is_visible() or not btn.is_enabled():
+                        continue
+                except Exception:
+                    continue
+                cid = _control_id(btn)
+                text = get_text(btn).strip()
+                if cid in (1, 2) or text == "确定" or "确定(" in text:
+                    btn.click_input()
+                    return
+        except Exception:
+            pass
+        try:
+            popup.close()
+        except Exception:
+            hot_key(["enter"])
 
     def _submit_trade_result(self, success_log, failed_log):
         hot_key(["enter"])
-        retry = 0
-        while retry < retry_time:
-            time.sleep(sleep_time)
-            result = self.get_result()
+        max_polls = max(retry_time, 50)
+        last_confirmed_handle = None
+        last_confirm_ts = 0.0
+        for _ in range(max_polls):
+            time.sleep(0.1)
+            result = self.get_result(close_popup=True)
             if result:
-                hot_key(["enter"])
-                logging.info(success_log)
+                logging.info(success_log if result.get("code") == 0 else failed_log)
                 return result
-            hot_key(["y"])
-            retry += 1
+            confirm_popup, yes_btn = self._find_trade_confirm_popup()
+            if confirm_popup is not None:
+                handle = getattr(confirm_popup, "handle", None)
+                now = time.time()
+                if handle != last_confirmed_handle or (now - last_confirm_ts) >= 0.4:
+                    logging.info("检测到委托确认弹窗，执行确认: handle=%s", handle)
+                    try:
+                        yes_btn.click_input()
+                    except Exception:
+                        confirm_popup.set_focus()
+                        hot_key(["y"])
+                    last_confirmed_handle = handle
+                    last_confirm_ts = now
         logging.info(failed_log)
         return {
             "code": 2,
@@ -993,27 +1265,78 @@ class ThsAuto:
             "msg": "获取结果失败,请自行确认订单状态",
         }
 
-    def _submit_cancel_result(self):
+    def _is_cancel_no_confirm_enabled(self) -> bool:
+        if not hasattr(ctypes, "windll"):
+            return False
+        try:
+            chk = self._get_right_control(CANCEL_NO_CONFIRM_CHECKBOX_ID, class_name="Button", timeout=0.3)
+            handle = getattr(chk, "handle", None)
+            if handle:
+                return bool(ctypes.windll.user32.SendMessageW(handle, BM_GETCHECK, 0, 0) == 1)
+        except Exception:
+            pass
+        return False
+
+    def _submit_cancel_result(self, entrust_no=None):
+        no_confirm_mode = self._is_cancel_no_confirm_enabled()
         hot_key(["enter"])
-        retry = 0
         seen_confirm = False
-        while retry < retry_time:
-            time.sleep(sleep_time)
+        last_confirm_ts = 0.0
+        idle_rounds = 0
+        max_polls = max(retry_time, 30)
+
+        for index in range(max_polls):
+            time.sleep(0.1)
+            result_popup = self.get_result(close_popup=True)
+            if result_popup is not None:
+                if result_popup.get("code") == 0 or "撤单" in result_popup.get("msg", "") and "失败" not in result_popup.get("msg", ""):
+                    return {"code": 0, "status": "succeed", "msg": result_popup.get("msg", "")}
+                return result_popup
+
             confirm_popup = self._find_cancel_confirm_popup()
             logging.info(
-                "撤单提交流程检查确认窗: attempt=%d/%d confirm_popup=%s",
-                retry + 1,
-                retry_time,
+                "撤单提交流程检查确认窗: attempt=%d/%d confirm_popup=%s no_confirm=%s",
+                index + 1,
+                max_polls,
                 getattr(confirm_popup, "handle", None),
+                no_confirm_mode,
             )
             if confirm_popup is not None:
+                static_joined = " ".join(self._window_static_texts(confirm_popup))
+                if entrust_no is not None and "合同编号" in static_joined and str(entrust_no) not in static_joined:
+                    logging.error(
+                        "撤单确认弹窗合同编号不匹配，中止撤单! expected=%s popup_text=%r",
+                        entrust_no,
+                        static_joined,
+                    )
+                    self._dismiss_stubborn_popup(confirm_popup)
+                    return {"code": 1, "status": "failed", "msg": "撤单目标行校验不一致，已安全取消"}
                 seen_confirm = True
-                hot_key(["y"])
-            elif seen_confirm:
+                now = time.time()
+                if now - last_confirm_ts >= 0.4:
+                    yes_btn = self._find_yes_button(confirm_popup)
+                    try:
+                        if yes_btn is not None:
+                            yes_btn.click_input()
+                        else:
+                            confirm_popup.set_focus()
+                            hot_key(["y"])
+                    except Exception:
+                        hot_key(["y"])
+                    last_confirm_ts = now
+                continue
+
+            if seen_confirm:
                 logging.info("撤单确认弹窗已消失")
                 return {"code": 0, "status": "succeed"}
-            retry += 1
-        logging.info("撤单确认弹窗未在预期时间内消失")
+
+            if no_confirm_mode and self.main_window.is_enabled():
+                idle_rounds += 1
+                if idle_rounds >= 4:
+                    logging.info("客户端已开启‘撤单不需要确认’且无异常弹窗，撤单指令已提交")
+                    return {"code": 0, "status": "succeed"}
+
+        logging.info("撤单确认弹窗未在预期时间内完成")
         return {
             "code": 2,
             "status": "unknown",
@@ -1088,21 +1411,41 @@ class ThsAuto:
         self._ensure_bound()
         return self._child_window(self.main_window, control_id=RIGHT_PANEL_CONTROL_ID)
 
-    def get_left_bottom_tabs(self):
+    def _find_left_bottom_tabs(self):
+        """查找旧版客户端左下角的‘普通/科创板’切换栏；新版合并界面中该控件隐藏，返回 None。"""
         self._ensure_bound()
-        return self._pick_descendant(
-            self.main_window,
-            lambda candidates: max(
-                candidates,
-                key=lambda ctrl: (
-                    ctrl.rectangle().top,
-                    -ctrl.rectangle().left,
-                    self._control_area(ctrl),
-                ),
+        try:
+            right_left = self.get_right_hwnd().rectangle().left
+        except Exception:
+            right_left = None
+
+        candidates = []
+        for ctrl in self._descendant_windows(self.main_window, visible_only=True, class_name="CCustomTabCtrl"):
+            try:
+                if self._control_area(ctrl) <= 0:
+                    continue
+                cid = _control_id(ctrl)
+                rect = ctrl.rectangle()
+                if cid == LEFT_BOTTOM_TAB_CONTROL_ID or (right_left is not None and rect.left < right_left):
+                    candidates.append(ctrl)
+            except Exception:
+                continue
+        if not candidates:
+            return None
+        return max(
+            candidates,
+            key=lambda ctrl: (
+                ctrl.rectangle().top,
+                -ctrl.rectangle().left,
+                self._control_area(ctrl),
             ),
-            "CCustomTabCtrl",
-            class_name="CCustomTabCtrl",
         )
+
+    def get_left_bottom_tabs(self):
+        tabs = self._find_left_bottom_tabs()
+        if tabs is not None:
+            return tabs
+        raise RuntimeError("当前客户端未显示左下角独立分类标签栏")
 
     def get_ocr_hwnd(self):
         for popup in self._popup_windows():
@@ -1129,7 +1472,7 @@ class ThsAuto:
                 ctrl = self._get_right_control(cid, class_name="Static", timeout=1.5)
             except Exception:
                 continue
-            value = get_text(ctrl)
+            value = get_text(ctrl).strip()
             if value:
                 data[key] = value
         if (
@@ -1138,11 +1481,18 @@ class ThsAuto:
             and "股票市值" in data
             and "冻结金额" in data
         ):
-            data["可用金额"] = str(
-                Decimal(data["总资产"])
-                - Decimal(data["股票市值"])
-                - Decimal(data["冻结金额"])
-            )
+            total_asset = _parse_decimal_safe(data["总资产"])
+            market_val = _parse_decimal_safe(data["股票市值"])
+            frozen_val = _parse_decimal_safe(data["冻结金额"])
+            if total_asset is not None and market_val is not None and frozen_val is not None:
+                data["可用金额"] = str(total_asset - market_val - frozen_val)
+            else:
+                logging.warning(
+                    "部分资金字段无法解析为数值，跳过可用金额兜底计算: total=%r market=%r frozen=%r",
+                    data.get("总资产"),
+                    data.get("股票市值"),
+                    data.get("冻结金额"),
+                )
         logging.info("账户余额信息获取成功")
         return {
             "code": 0,
@@ -1168,7 +1518,7 @@ class ThsAuto:
                 "data": parse_table(data),
             }
         logging.info("持仓信息获取失败")
-        return {"code": 1, "status": "failed"}
+        return {"code": 1, "status": "failed", "msg": "获取持仓表格数据失败"}
 
     def get_active_orders(self):
         logging.info("开始获取当前委托信息...")
@@ -1191,7 +1541,7 @@ class ThsAuto:
                 "data": parse_table(data),
             }
         logging.info("当前委托信息获取失败")
-        return {"code": 1, "status": "failed"}
+        return {"code": 1, "status": "failed", "msg": "获取当前委托表格数据失败"}
 
     def get_filled_orders(self):
         logging.info("开始获取历史成交信息...")
@@ -1210,7 +1560,7 @@ class ThsAuto:
                 "data": parse_table(data),
             }
         logging.info("历史成交信息获取失败")
-        return {"code": 1, "status": "failed"}
+        return {"code": 1, "status": "failed", "msg": "获取当日成交表格数据失败"}
 
     def sell(self, stock_no, amount, price):
         logging.info(
@@ -1236,8 +1586,11 @@ class ThsAuto:
         logging.info(
             f"开始科创板卖出操作，股票代码: {stock_no}, 数量: {amount}, 价格: {price}"
         )
-        self.switch_to_kechuang()
-        self.click_kc_sell()
+        if self.switch_to_kechuang():
+            self.click_kc_sell()
+        else:
+            hot_key(["F2"])
+            time.sleep(sleep_time)
         self._fill_trade_form(stock_no, amount, price)
         return self._submit_trade_result("科创板卖出操作成功", "科创板卖出操作失败")
 
@@ -1245,13 +1598,33 @@ class ThsAuto:
         logging.info(
             f"开始科创板买入操作，股票代码: {stock_no}, 数量: {amount}, 价格: {price}"
         )
-        self.switch_to_kechuang()
-        self.click_kc_buy()
+        if self.switch_to_kechuang():
+            self.click_kc_buy()
+        else:
+            hot_key(["F1"])
+            time.sleep(sleep_time)
         self._fill_trade_form(stock_no, amount, price)
         return self._submit_trade_result("科创板买入操作成功", "科创板买入操作失败")
 
+    def _select_grid_row_by_keyboard(self, grid_ctrl, row_index: int):
+        """使用纯键盘导航选中虚拟表格第 row_index 行，避免硬编码行高像素与滚动条错位。"""
+        grid_ctrl.set_focus()
+        time.sleep(sleep_time)
+        hot_key(["ctrl", "home"])
+        time.sleep(sleep_time)
+        hot_key(["pgup"])
+        time.sleep(sleep_time)
+        hot_key(["home"])
+        time.sleep(sleep_time)
+        for _ in range(row_index):
+            hot_key(["down"])
+            time.sleep(sleep_time)
+
     def cancel(self, entrust_no):
-        logging.info(f"开始撤单操作，委托编号: {entrust_no}")
+        target_no = str(entrust_no or "").strip()
+        if not target_no:
+            raise ValueError("合同编号 entrust_no 不能为空")
+        logging.info(f"开始撤单操作，委托编号: {target_no}")
         self.switch_to_normal()
         hot_key(["F3"])
         self.refresh()
@@ -1262,34 +1635,47 @@ class ThsAuto:
             entrusts = parse_table(data)
             find = None
             for i, entrust in enumerate(entrusts):
-                if str(entrust.get("合同编号")) == str(entrust_no):
+                if str(entrust.get("合同编号", "")).strip() == target_no:
                     find = i
                     break
             if find is None:
-                logging.info("未找到指定委托")
+                logging.info("未找到指定委托: entrust_no=%s", target_no)
                 return {"code": 1, "status": "failed", "msg": "没找到指定订单"}
-            ctrl.double_click_input(coords=(50, 30 + 16 * find))
-            time.sleep(sleep_time)
-            result = self._submit_cancel_result()
+            logging.info("定位到目标委托行: entrust_no=%s row_index=%d/%d", target_no, find, len(entrusts))
+            self._select_grid_row_by_keyboard(ctrl, find)
+            result = self._submit_cancel_result(entrust_no=target_no)
             if result.get("code") == 0:
-                logging.info("撤单操作成功")
+                logging.info("撤单操作成功: entrust_no=%s", target_no)
             else:
-                logging.info("撤单操作未确认完成")
+                logging.info("撤单操作未确认完成: entrust_no=%s result=%s", target_no, result)
             return result
-        logging.info("撤单操作失败")
-        return {"code": 1, "status": "failed"}
+        logging.info("撤单操作失败: 未能读取撤单列表")
+        return {"code": 1, "status": "failed", "msg": "读取可撤委托列表失败"}
 
-    def get_result(self, cid=0x3EC):
+    def get_result(self, cid=0x3EC, close_popup=False):
         for popup in self._popup_windows():
+            if self._is_persistent_tool_window(popup):
+                continue
+            text = ""
             try:
                 ctrl = self._child_window(
-                    popup, control_id=cid, class_name="Static", timeout=0.5
+                    popup, control_id=cid, class_name="Static", timeout=0.2
                 )
+                text = get_text(ctrl).strip()
             except Exception:
-                continue
-            text = get_text(ctrl)
+                # 兜底识别无“是”按钮、仅含“确定”按钮的本地校验提示弹窗（如 cid=0x410）
+                if self._find_yes_button(popup) is None and not self._window_has_static_text(popup, "验证码"):
+                    try:
+                        alt_ctrl = self._child_window(
+                            popup, control_id=0x410, class_name="Static", timeout=0.1
+                        )
+                        text = get_text(alt_ctrl).strip()
+                    except Exception:
+                        text = ""
             if not text:
                 continue
+            if close_popup:
+                self._close_result_popup(popup)
             if "已成功提交" in text:
                 result = {
                     "code": 0,
@@ -1297,7 +1683,7 @@ class ThsAuto:
                     "msg": text,
                 }
                 if "合同编号：" in text:
-                    result["entrust_no"] = text.split("合同编号：", 1)[1].split("。", 1)[0]
+                    result["entrust_no"] = text.split("合同编号：", 1)[1].split("。", 1)[0].strip()
                 return result
             return {
                 "code": 1,
@@ -1330,26 +1716,63 @@ class ThsAuto:
             logging.exception("主窗口激活失败，尝试重新绑定")
             self.bind_client()
 
+    def _get_work_area(self):
+        if hasattr(ctypes, "windll"):
+            try:
+                from ctypes import wintypes
+                work_rect = wintypes.RECT()
+                if ctypes.windll.user32.SystemParametersInfoW(
+                    SPI_GETWORKAREA, 0, ctypes.byref(work_rect), 0
+                ):
+                    return work_rect.left, work_rect.top, work_rect.right, work_rect.bottom
+            except Exception:
+                pass
+            screen_width = ctypes.windll.user32.GetSystemMetrics(0)
+            screen_height = ctypes.windll.user32.GetSystemMetrics(1)
+            return 0, 0, screen_width, screen_height - TASKBAR_RESERVED_HEIGHT
+        return 0, 0, TARGET_MAIN_WINDOW_WIDTH, TARGET_MAIN_WINDOW_HEIGHT
+
     def _ensure_main_window_size(self):
         try:
             rect = self.main_window.rectangle()
             width, height = rect.width(), rect.height()
-            if width >= MIN_MAIN_WINDOW_WIDTH and height >= MIN_MAIN_WINDOW_HEIGHT:
+            wa_left, wa_top, wa_right, wa_bottom = self._get_work_area()
+            wa_width = max(MIN_MAIN_WINDOW_WIDTH, wa_right - wa_left)
+            wa_height = max(MIN_MAIN_WINDOW_HEIGHT, wa_bottom - wa_top)
+
+            too_small = width < MIN_MAIN_WINDOW_WIDTH or height < MIN_MAIN_WINDOW_HEIGHT
+            out_of_workarea = (
+                rect.left < wa_left
+                or rect.top < wa_top
+                or rect.right > wa_right
+                or rect.bottom > wa_bottom
+            )
+            if not too_small and not out_of_workarea:
                 return
-            screen_width = ctypes.windll.user32.GetSystemMetrics(0)
-            screen_height = ctypes.windll.user32.GetSystemMetrics(1)
-            new_width = min(TARGET_MAIN_WINDOW_WIDTH, screen_width)
-            new_height = min(TARGET_MAIN_WINDOW_HEIGHT, screen_height - TASKBAR_RESERVED_HEIGHT)
+
+            new_width = min(max(width, TARGET_MAIN_WINDOW_WIDTH) if too_small else width, wa_width)
+            new_height = min(max(height, TARGET_MAIN_WINDOW_HEIGHT) if too_small else height, wa_height)
+            new_x = min(max(rect.left, wa_left), max(wa_left, wa_right - new_width))
+            new_y = min(max(rect.top, wa_top), max(wa_top, wa_bottom - new_height))
+            if too_small:
+                new_x, new_y = wa_left, wa_top
+
             logging.warning(
-                "主窗口尺寸过小，自动调整: 原尺寸=%dx%d 新尺寸=%dx%d 屏幕=%dx%d",
-                width,
-                height,
+                "主窗口尺寸或位置超出工作区，自动调整: 原=(%d,%d,%d,%d) 新=(%d,%d,%dx%d) 工作区=(%d,%d,%d,%d)",
+                rect.left,
+                rect.top,
+                rect.right,
+                rect.bottom,
+                new_x,
+                new_y,
                 new_width,
                 new_height,
-                screen_width,
-                screen_height,
+                wa_left,
+                wa_top,
+                wa_right,
+                wa_bottom,
             )
-            self.main_window.move_window(x=0, y=0, width=new_width, height=new_height, repaint=True)
+            self.main_window.move_window(x=new_x, y=new_y, width=new_width, height=new_height, repaint=True)
             time.sleep(refresh_sleep_time)
         except Exception:
             logging.exception("检查或调整主窗口尺寸失败")
@@ -1376,18 +1799,26 @@ class ThsAuto:
         logging.info("切换到普通交易标签")
         self.active_main_window()
         hot_key(["esc"])
-        tabs = self.get_left_bottom_tabs()
+        tabs = self._find_left_bottom_tabs()
+        if tabs is None:
+            logging.info("客户端无独立左下角分类标签栏，保持普通/合并交易视图")
+            return False
         logging.info("普通交易标签控件: handle=%s", getattr(tabs, "handle", "unknown"))
         tabs.click_input(coords=(10, 5))
         time.sleep(sleep_time)
+        return True
 
     def switch_to_kechuang(self):
         logging.info("切换到科创板标签")
         self.active_main_window()
-        tabs = self.get_left_bottom_tabs()
+        tabs = self._find_left_bottom_tabs()
+        if tabs is None:
+            logging.info("客户端无独立左下角分类标签栏，使用合并交易视图执行科创板委托")
+            return False
         logging.info("科创板标签控件: handle=%s", getattr(tabs, "handle", "unknown"))
         tabs.click_input(coords=(200, 5))
         time.sleep(sleep_time)
+        return True
 
     def click_kc_buy(self):
         tree = self.get_tree_hwnd()
@@ -1403,7 +1834,7 @@ class ThsAuto:
         control = _resolve_wrapper(hwnd)
         logging.info("开始复制表格: handle=%s class=%s", getattr(control, "handle", "unknown"), control.class_name())
         self.active_main_window()
-        os.system("echo off | clip")
+        clear_clipboard()
         logging.info("剪贴板已清空，准备发送Ctrl+A Ctrl+C")
         control.set_focus()
         control.type_keys("^A^C", set_foreground=False, pause=sleep_time)
@@ -1945,28 +2376,28 @@ class ThsAuto:
             return self.buy(
                 stock_no=str(params["stock_no"]),
                 amount=int(params["amount"]),
-                price=float(price) if price is not None else None,
+                price=price if price is not None and str(price).strip() != "" else None,
             )
         if action == "sell":
             price = params.get("price")
             return self.sell(
                 stock_no=str(params["stock_no"]),
                 amount=int(params["amount"]),
-                price=float(price) if price is not None else None,
+                price=price if price is not None and str(price).strip() != "" else None,
             )
         if action == "buy_kc":
             price = params.get("price")
             return self.buy_kc(
                 stock_no=str(params["stock_no"]),
                 amount=int(params["amount"]),
-                price=float(price) if price is not None else None,
+                price=price if price is not None and str(price).strip() != "" else None,
             )
         if action == "sell_kc":
             price = params.get("price")
             return self.sell_kc(
                 stock_no=str(params["stock_no"]),
                 amount=int(params["amount"]),
-                price=float(price) if price is not None else None,
+                price=price if price is not None and str(price).strip() != "" else None,
             )
         if action == "cancel":
             return self.cancel(entrust_no=str(params["entrust_no"]))

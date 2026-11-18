@@ -128,15 +128,20 @@ def get_filled_orders():
     result = auto.get_filled_orders()
     return jsonify(result), 200
 
+def _optional_price_arg():
+    raw = request.args.get('price', None)
+    if raw is None or str(raw).strip() == '':
+        return None
+    return str(raw).strip()
+
+
 @app.route('/thsauto/sell', methods = ['GET'])
 @interval_call
 def sell():
     auto.active_main_window()
     stock = request.args['stock_no']
     amount = request.args['amount']
-    price = request.args.get('price', None)
-    if price is not None:
-        price = float(price)
+    price = _optional_price_arg()
     result = auto.sell(stock_no=stock, amount=int(amount), price=price)
     return jsonify(result), 200
 
@@ -146,9 +151,7 @@ def buy():
     auto.active_main_window()
     stock = request.args['stock_no']
     amount = request.args['amount']
-    price = request.args.get('price', None)
-    if price is not None:
-        price = float(price)
+    price = _optional_price_arg()
     result = auto.buy(stock_no=stock, amount=int(amount), price=price)
     return jsonify(result), 200
 
@@ -158,9 +161,7 @@ def buy_kc():
     auto.active_main_window()
     stock = request.args['stock_no']
     amount = request.args['amount']
-    price = request.args.get('price', None)
-    if price is not None:
-        price = float(price)
+    price = _optional_price_arg()
     result = auto.buy_kc(stock_no=stock, amount=int(amount), price=price)
     return jsonify(result), 200
 
@@ -170,9 +171,7 @@ def sell_kc():
     auto.active_main_window()
     stock = request.args['stock_no']
     amount = request.args['amount']
-    price = request.args.get('price', None)
-    if price is not None:
-        price = float(price)
+    price = _optional_price_arg()
     result = auto.sell_kc(stock_no=stock, amount=int(amount), price=price)
     return jsonify(result), 200
 
